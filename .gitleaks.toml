@@ -1,0 +1,19 @@
+[extend]
+useDefault = true
+
+# Allowlist placeholder/example credentials in tutorial and documentation files.
+# These are illustrative values, not real secrets.
+[[allowlists]]
+description = "Example/placeholder API keys in tutorial and documentation"
+paths = [
+    "docs/tutorial.ipynb",
+    "docs/deployment.md",
+]
+regexes = [
+    # Generic placeholder patterns
+    '''YOUR-API-KEY''',
+    '''YOUR_API_KEY''',
+    '''<your[-_]api[-_]key>''',
+    # Redacted example token shown in tutorial (16 x's after the prefix)
+    '''sk-stream-amplify-x{8,}''',
+]
