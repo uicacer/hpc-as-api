@@ -77,10 +77,10 @@ GLOBUS_CLIENT_SECRET = os.getenv("GLOBUS_CLIENT_SECRET", "")  # pragma: allowlis
 
 # Allowed identity domains for direct Globus auth.
 # Users whose Globus email matches any of these patterns are allowed.
-# Empty list = allow any valid Globus identity (less restrictive).
-# Example: ["uic.edu", "illinois.edu"] allows both UIC and UIUC users.
+# Empty string (default) = allow any valid Globus identity.
+# Example: PROXY_ALLOWED_DOMAINS="uic.edu,illinois.edu" restricts to UIC + UIUC.
 ALLOWED_DOMAINS = [
-    d.strip() for d in os.getenv("PROXY_ALLOWED_DOMAINS", "uic.edu").split(",") if d.strip()
+    d.strip() for d in os.getenv("PROXY_ALLOWED_DOMAINS", "").split(",") if d.strip()
 ]
 
 # API key table for service-to-service callers (e.g., Amplify server on AWS).
