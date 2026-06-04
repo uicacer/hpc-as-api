@@ -259,6 +259,7 @@ async def proxy_chat_completions(
 # Internal routing helpers
 # =========================================================================
 
+
 async def _route_via_globus_compute(model, messages, temperature, max_tokens, stream):
     """Route a request to the HPC cluster via Globus Compute."""
     if not globus_client or not globus_client.is_available():
@@ -375,9 +376,7 @@ async def _route_via_globus_compute_streaming(model, messages, temperature, max_
                         usage = msg.get("usage", {})
                         if usage:
                             final_chunk = {
-                                "choices": [
-                                    {"index": 0, "delta": {}, "finish_reason": "stop"}
-                                ],
+                                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                                 "usage": usage,
                             }
                             yield f"data: {json.dumps(final_chunk)}\n\n"
@@ -470,7 +469,7 @@ def _convert_json_to_sse_stream(json_response: dict):
     Splitting on words rather than characters avoids cutting through multi-byte
     Unicode sequences and keeps each chunk visually coherent.
     """
-    words_per_chunk = 2       # 2 words → smooth appearance without excessive events
+    words_per_chunk = 2  # 2 words → smooth appearance without excessive events
     delay_between_chunks = 0.05  # 50 ms → ~40 words/second reading pace
 
     async def sse_generator():

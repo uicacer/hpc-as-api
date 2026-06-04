@@ -25,11 +25,17 @@ Usage::
     # uvicorn mymodule:app --host 0.0.0.0 --port 8001
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os
+from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
+
+if TYPE_CHECKING:
+    from hpc_as_api.auth import AuthConfig, Authenticator
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +49,7 @@ def create_openai_app(
     host: str = "0.0.0.0",  # nosec B104
     port: int = 8001,
     log_level: str = "INFO",
+    auth: "AuthConfig | Authenticator | None" = None,
 ) -> FastAPI:
     """
     Create an OpenAI-compatible FastAPI gateway for LLM inference on HPC.
@@ -69,19 +76,41 @@ def create_openai_app(
         host: Bind address for standalone ``main()`` mode. Default ``0.0.0.0``.
         port: Port for standalone ``main()`` mode. Default ``8001``.
         log_level: Uvicorn log level. Default ``INFO``.
+        auth: Authentication configuration. Pass an :class:`~hpc_as_api.auth.AuthConfig`
+            to configure all auth settings in Python (Globus credentials, allowed
+            domains, API keys, rate limits). Falls back to env vars when not supplied.
 
     Returns:
         A :class:`fastapi.FastAPI` app ready for uvicorn.
 
-    Example — embed in an existing FastAPI app::
+    Example — restrict to one institution, all config in Python::
 
         from hpc_as_api.presets.openai import create_openai_app
-        from fastapi import FastAPI
+        from hpc_as_api.auth import AuthConfig
 
+        app = create_openai_app(
+            endpoint_id="8d978809-...",
+            models={"llama3": {"hf_name": "meta-llama/Llama-3-70b", "url": "http://gpu01:8000"}},
+            relay_url="wss://relay.example.com",
+            auth=AuthConfig(
+                globus_client_id="your-client-id",
+                globus_client_secret="your-client-secret",
+                allowed_domains=["ornl.gov", "anl.gov"],
+                api_keys={"myservice": "sk-my-service-key"},
+                rate_limit_requests=20,
+                rate_limit_window=60,
+            ),
+        )
+
+    Example — embed in an existing FastAPI app::
+
+        from fastapi import FastAPI
         main_app = FastAPI()
         hpc_app = create_openai_app(endpoint_id="...", models={...}, relay_url="...")
         main_app.mount("/hpc", hpc_app)
     """
+    from hpc_as_api.auth import AuthConfig
+
     # Resolve configuration: explicit args > env vars
     _endpoint_id = endpoint_id or os.getenv("GLOBUS_COMPUTE_ENDPOINT_ID")
     _relay_url = relay_url or os.getenv("RELAY_URL", "")
@@ -99,6 +128,20 @@ def create_openai_app(
         os.environ["RELAY_SECRET"] = _relay_secret
     if _relay_encryption_key:
         os.environ["RELAY_ENCRYPTION_KEY"] = _relay_encryption_key
+
+    # If auth config was passed, inject Globus credentials into env so that the
+    # app module (which reads from env at import time) picks them up too.
+    if auth is not None:
+        cfg = auth if isinstance(auth, AuthConfig) else auth.config
+        if cfg.globus_client_id:
+            os.environ["GLOBUS_CLIENT_ID"] = cfg.globus_client_id
+        if cfg.globus_client_secret:
+            os.environ["GLOBUS_CLIENT_SECRET"] = cfg.globus_client_secret
+        if cfg.allowed_domains:
+            os.environ["PROXY_ALLOWED_DOMAINS"] = ",".join(cfg.allowed_domains)
+        # Inject API keys as PROXY_API_KEY_<NAME> env vars
+        for key, name in cfg.api_keys.items():
+            os.environ[f"PROXY_API_KEY_{name.upper()}"] = key
 
     from hpc_as_api.app import app as _app
 

@@ -88,9 +88,7 @@ def has_images(messages: list[dict]) -> bool:
     for msg in messages:
         content = msg.get("content", "")
         # Only list-type content can contain images — plain strings are always text-only
-        if isinstance(content, list) and any(
-            block.get("type") == "image_url" for block in content
-        ):
+        if isinstance(content, list) and any(block.get("type") == "image_url" for block in content):
             return True
     return False
 

@@ -387,6 +387,7 @@ class GlobusComputeClient:
         # Model registry — maps your model names to their HPC-side configuration.
         # If not passed, try to read from HPC_MODELS env var (JSON string).
         import json as _json
+
         if models is not None:
             self.models = models
         else:
@@ -519,6 +520,7 @@ class GlobusComputeClient:
         if force_refresh:
             try:
                 from globus_compute_sdk.sdk.auth import globus_app as globus_app_module
+
                 if hasattr(globus_app_module, "_globus_app"):
                     globus_app_module._globus_app = None
                 if hasattr(globus_app_module, "GLOBUS_APP"):
@@ -529,6 +531,7 @@ class GlobusComputeClient:
 
         if self._globus_app is None:
             from globus_compute_sdk.sdk.auth.globus_app import get_globus_app
+
             self._globus_app = get_globus_app()
         return self._globus_app
 
@@ -548,6 +551,7 @@ class GlobusComputeClient:
             self._globus_app = None
             try:
                 from globus_compute_sdk.sdk.auth import globus_app as m
+
                 if hasattr(m, "_globus_app"):
                     m._globus_app = None
                 if hasattr(m, "GLOBUS_APP"):
@@ -593,6 +597,7 @@ class GlobusComputeClient:
         uses JSON length as a proxy — accurate enough for the size check.
         """
         import json
+
         try:
             return len(json.dumps(messages).encode("utf-8"))
         except (TypeError, ValueError):
@@ -711,7 +716,10 @@ class GlobusComputeClient:
 
         except TimeoutError:
             logger.error(f"Globus task timed out after {self.task_timeout}s")
-            return {"error": f"Task timeout after {self.task_timeout}s", "error_type": "TimeoutError"}
+            return {
+                "error": f"Task timeout after {self.task_timeout}s",
+                "error_type": "TimeoutError",
+            }
 
         except GlobusAPIError as e:
             if e.http_status in (401, 403):
@@ -882,7 +890,9 @@ class GlobusComputeClient:
             if globus_token:
                 own_executor = self._make_executor_for_token(globus_token)
                 gce = own_executor
-                logger.info(f"Using caller-token executor (per-user attribution, channel={channel_id[:8]})")
+                logger.info(
+                    f"Using caller-token executor (per-user attribution, channel={channel_id[:8]})"
+                )
             else:
                 gce = self._get_executor()
 
@@ -972,7 +982,7 @@ class GlobusComputeClient:
                 hf_name,
                 [{"role": "user", "content": "hi"}],
                 0.0,  # temperature=0 (deterministic, no wasted randomness)
-                1,    # max_tokens=1 (just need to know if the model responds)
+                1,  # max_tokens=1 (just need to know if the model responds)
                 False,
             )
             result = future.result(timeout=timeout)

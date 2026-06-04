@@ -33,6 +33,7 @@ Two usage styles:
        result = await client.submit_inference(messages=[...], model="qwen25-vl-72b")
 """
 
+from hpc_as_api.auth import AuthConfig, Authenticator
 from hpc_as_api.utils import (
     count_images,
     extract_text_content,
@@ -42,6 +43,7 @@ from hpc_as_api.utils import (
 
 try:
     from hpc_as_api.core import HPCApp
+
     _CORE_AVAILABLE = True
 except ImportError:
     _CORE_AVAILABLE = False
@@ -49,12 +51,15 @@ except ImportError:
 # GlobusComputeClient depends on globus_compute_sdk (optional extra [globus]).
 try:
     from hpc_as_api.compute import GlobusComputeClient
+
     _GLOBUS_AVAILABLE = True
 except ImportError:
     _GLOBUS_AVAILABLE = False
 
 __version__ = "0.2.0"
 __all__ = [
+    "AuthConfig",
+    "Authenticator",
     "HPCApp",
     "GlobusComputeClient",
     "extract_text_content",

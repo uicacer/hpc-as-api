@@ -53,6 +53,7 @@ def _require_root_or_sudo(action: str):
 # serve
 # ---------------------------------------------------------------------------
 
+
 def cmd_serve(args):
     """Start the gateway server in the foreground."""
     import uvicorn
@@ -68,6 +69,7 @@ def cmd_serve(args):
 # ---------------------------------------------------------------------------
 # install
 # ---------------------------------------------------------------------------
+
 
 def cmd_install(args):
     if _is_linux():
@@ -97,7 +99,7 @@ def _install_systemd(args):
         After=network.target
 
         [Service]
-        User={os.getenv('SUDO_USER', 'ubuntu')}
+        User={os.getenv("SUDO_USER", "ubuntu")}
         {env_section}
         ExecStart={python} -m uvicorn hpc_as_api.app:app --host 0.0.0.0 --port 8001 --log-level info
         Restart=always
@@ -134,8 +136,7 @@ def _install_launchd(args):
                     env_dict[k.strip()] = v.strip()
 
     env_xml = "\n".join(
-        f"            <key>{k}</key><string>{v}</string>"
-        for k, v in env_dict.items()
+        f"            <key>{k}</key><string>{v}</string>" for k, v in env_dict.items()
     )
     env_block = (
         f"<key>EnvironmentVariables</key>\n        <dict>\n{env_xml}\n        </dict>"
@@ -178,6 +179,7 @@ def _install_launchd(args):
 # ---------------------------------------------------------------------------
 # start / stop / restart / status / uninstall
 # ---------------------------------------------------------------------------
+
 
 def cmd_start(args):
     if _is_linux():
@@ -227,7 +229,7 @@ def cmd_status(args):
         print(json.dumps(resp.json(), indent=2))
     except Exception as e:
         print(f"\n[hpc-as-api] Health check failed: {e}")
-        print(f"  (Is the service running? Try: sudo hpc-as-api start)")
+        print("  (Is the service running? Try: sudo hpc-as-api start)")
 
 
 def cmd_uninstall(args):
@@ -252,6 +254,7 @@ def cmd_uninstall(args):
 # Main entry point
 # ---------------------------------------------------------------------------
 
+
 def main():
     """
     hpc-as-api CLI entry point.
@@ -273,8 +276,10 @@ def main():
     # install
     p_install = subparsers.add_parser("install", help="Install as a systemd/launchd service")
     p_install.add_argument(
-        "--env-file", default="", dest="env_file",
-        help="Path to an EnvironmentFile with env vars (recommended for secrets)"
+        "--env-file",
+        default="",
+        dest="env_file",
+        help="Path to an EnvironmentFile with env vars (recommended for secrets)",
     )
 
     # start / stop / restart

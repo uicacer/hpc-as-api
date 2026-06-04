@@ -30,13 +30,18 @@ Quickstart::
     # uvicorn mymodule:app --port 8001
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os
 import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from hpc_as_api.auth import AuthConfig, Authenticator
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -127,6 +132,7 @@ class HPCApp:
         relay_encryption_key: str = "",
         title: str = "HPC Gateway",
         description: str = "HTTP gateway for HPC functions via Globus Compute",
+        auth: "AuthConfig | Authenticator | None" = None,
     ):
         self.endpoint_id = endpoint_id or os.getenv("GLOBUS_COMPUTE_ENDPOINT_ID")
         self.relay_url = relay_url or os.getenv("RELAY_URL", "")
@@ -135,6 +141,14 @@ class HPCApp:
         self.title = title
         self.description = description
         self._routes: list[_Route] = []
+        # Accept either an AuthConfig (wrap it) or a ready-made Authenticator.
+        # None → fall back to the module-level env-var-based authenticate function.
+        from hpc_as_api.auth import AuthConfig, Authenticator
+
+        if isinstance(auth, AuthConfig):
+            self._authenticator: "Authenticator | None" = Authenticator(auth)
+        else:
+            self._authenticator = auth  # Authenticator instance or None
 
     def mount(
         self,
@@ -249,6 +263,7 @@ class HPCApp:
                 relay_url=relay_url,
                 relay_secret=relay_secret,
                 relay_encryption_key=relay_encryption_key,
+                authenticator=self._authenticator,
             )
 
         fastapi_app.include_router(router)
@@ -262,9 +277,10 @@ def _add_route(
     relay_url: str,
     relay_secret: str,
     relay_encryption_key: str,
+    authenticator: "Authenticator | None" = None,
 ) -> None:
     """Register one POST endpoint on the router for the given route."""
-    from hpc_as_api.auth import authenticate
+    from hpc_as_api.auth import Authenticator, authenticate
 
     path = route.path
     schema_cls = route.input_schema
@@ -273,7 +289,10 @@ def _add_route(
     route_auth = route.auth
     route_description = route.description
 
-    dependencies = [Depends(authenticate)] if route_auth else []
+    # Use the provided Authenticator if given, otherwise fall back to the
+    # module-level env-var-based authenticate function.
+    auth_dep = authenticator if isinstance(authenticator, Authenticator) else authenticate
+    dependencies = [Depends(auth_dep)] if route_auth else []
 
     async def _endpoint(body: schema_cls):  # type: ignore[valid-type]
         client = client_ref[0]
@@ -298,9 +317,7 @@ def _add_route(
             )
         except Exception as exc:
             logger.error(f"Failed to submit job: {exc}", exc_info=True)
-            raise HTTPException(
-                status_code=503, detail=f"Failed to submit HPC job: {exc}"
-            ) from exc
+            raise HTTPException(status_code=503, detail=f"Failed to submit HPC job: {exc}") from exc
 
         async def sse_gen():
             from websockets.asyncio.client import connect as ws_connect

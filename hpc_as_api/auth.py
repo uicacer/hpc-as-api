@@ -62,62 +62,104 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# CONFIGURATION
+# GLOBUS AUTH CONSTANT
 # =============================================================================
 
-# Globus Auth introspect endpoint — public, no special access needed
 GLOBUS_INTROSPECT_URL = "https://auth.globus.org/v2/oauth2/token/introspect"
 
-# Your Globus application's client_id and client_secret.
-# Register at https://developers.globus.org → "Register a new app"
-# The proxy uses these to authenticate *itself* when calling the introspect endpoint.
-# These are NOT the user's credentials — they identify the proxy as a trusted app.
+
+# =============================================================================
+# AUTH CONFIGURATION
+# =============================================================================
+
+
+@dataclass
+class AuthConfig:
+    """
+    All authentication settings for the proxy, in one place.
+
+    Every field falls back to its corresponding environment variable when not
+    supplied — so existing env-var-based deployments work without any changes.
+    Pass an ``AuthConfig`` instance to ``HPCApp`` or ``create_openai_app`` to
+    configure auth entirely in Python, with no ``.env`` files needed.
+
+    Example — restrict to a specific institution::
+
+        from hpc_as_api.auth import AuthConfig
+
+        auth = AuthConfig(
+            globus_client_id="your-client-id",
+            globus_client_secret="your-client-secret",
+            allowed_domains=["ornl.gov", "anl.gov"],
+            api_keys={"myservice": "sk-my-service-key"},
+            rate_limit_requests=10,
+            rate_limit_window=60,
+        )
+
+    Example — open to any valid Globus identity::
+
+        auth = AuthConfig(
+            globus_client_id="your-client-id",
+            globus_client_secret="your-client-secret",
+            allowed_domains=[],          # empty = accept any Globus identity
+            api_keys={"ci": "sk-ci-key"},
+        )
+
+    +---------------------------+------------------------------+
+    | Argument                  | Env var fallback             |
+    +===========================+==============================+
+    | ``globus_client_id``      | ``GLOBUS_CLIENT_ID``         |
+    | ``globus_client_secret``  | ``GLOBUS_CLIENT_SECRET``     |
+    | ``allowed_domains``       | ``PROXY_ALLOWED_DOMAINS``    |
+    | ``api_keys``              | ``PROXY_API_KEY_<NAME>``     |
+    | ``rate_limit_requests``   | ``PROXY_RATE_LIMIT_REQUESTS``|
+    | ``rate_limit_window``     | ``PROXY_RATE_LIMIT_WINDOW``  |
+    +---------------------------+------------------------------+
+    """
+
+    globus_client_id: str = field(default_factory=lambda: os.getenv("GLOBUS_CLIENT_ID", ""))
+    globus_client_secret: str = field(default_factory=lambda: os.getenv("GLOBUS_CLIENT_SECRET", ""))
+
+    # Allowed Globus email domains. Empty list = accept any valid Globus identity.
+    # Example: ["uic.edu", "anl.gov"] restricts to those institutions.
+    allowed_domains: list[str] = field(
+        default_factory=lambda: [
+            d.strip() for d in os.getenv("PROXY_ALLOWED_DOMAINS", "").split(",") if d.strip()
+        ]
+    )
+
+    # API keys for service-to-service callers. Keys are mapped to service names
+    # for logging. Populated from PROXY_API_KEY_<NAME> env vars by default.
+    api_keys: dict[str, str] = field(default_factory=lambda: _load_api_keys_from_env())
+
+    rate_limit_requests: int = field(
+        default_factory=lambda: int(os.getenv("PROXY_RATE_LIMIT_REQUESTS", "20"))
+    )
+    rate_limit_window: int = field(
+        default_factory=lambda: int(os.getenv("PROXY_RATE_LIMIT_WINDOW", "60"))
+    )
+
+
+def _load_api_keys_from_env() -> dict[str, str]:
+    """Load API keys from PROXY_API_KEY_<NAME> env vars. key → service_name."""
+    table: dict[str, str] = {}
+    for name, val in os.environ.items():
+        if name.startswith("PROXY_API_KEY_") and val:
+            table[val] = name[len("PROXY_API_KEY_") :].lower()
+    legacy = os.getenv("PROXY_API_KEY", "")
+    if legacy and legacy not in table:
+        table[legacy] = "legacy"
+    return table
+
+
+# Module-level defaults (used by the legacy module-level `authenticate` function).
+# New code should use Authenticator(AuthConfig()) instead.
 GLOBUS_CLIENT_ID = os.getenv("GLOBUS_CLIENT_ID", "")
 GLOBUS_CLIENT_SECRET = os.getenv("GLOBUS_CLIENT_SECRET", "")  # pragma: allowlist secret
-
-# Allowed identity domains for direct Globus auth.
-# Users whose Globus email matches any of these patterns are allowed.
-# Empty string (default) = allow any valid Globus identity.
-# Example: PROXY_ALLOWED_DOMAINS="uic.edu,illinois.edu" restricts to UIC + UIUC.
 ALLOWED_DOMAINS = [
     d.strip() for d in os.getenv("PROXY_ALLOWED_DOMAINS", "").split(",") if d.strip()
 ]
-
-# API key table for service-to-service callers (e.g., Amplify server on AWS).
-# Format: "key": "service_name"
-# Add new callers here and rotate keys via environment variables.
-# In production, load this from a secrets manager (AWS Secrets Manager, Vault, etc.)
-#
-# Keys are stored as-is in memory but only their SHA-256 hash appears in logs,
-# so log files never contain raw credentials.
-_RAW_API_KEY_TABLE: dict[str, str] = {}
-
-# Populate from environment — each key is PROXY_API_KEY_<NAME>=<value>
-# Example .env:
-#   PROXY_API_KEY_AMPLIFY=sk-stream-amplify-xxxx
-#   PROXY_API_KEY_LANGCHAIN=sk-stream-langchain-yyyy
-for _env_name, _env_val in os.environ.items():
-    if _env_name.startswith("PROXY_API_KEY_") and _env_val:
-        _service_name = _env_name[len("PROXY_API_KEY_") :].lower()
-        _RAW_API_KEY_TABLE[_env_val] = _service_name
-
-# Fallback: support single legacy PROXY_API_KEY for backwards compatibility
-_legacy_key = os.getenv("PROXY_API_KEY", "")
-if _legacy_key and _legacy_key not in _RAW_API_KEY_TABLE:
-    _RAW_API_KEY_TABLE[_legacy_key] = "legacy"
-
-# =============================================================================
-# RATE LIMITING
-# =============================================================================
-#
-# Simple in-memory rate limiter — per caller identity (Globus email or service name).
-# For a multi-process deployment, replace with Redis-backed rate limiting.
-#
-# Limits are intentionally conservative to protect the shared HPC cluster.
-# Each request dispatches a Globus Compute job that runs a 72B model on an H100.
-# A single misbehaving caller could monopolize the cluster for everyone.
-
-# Requests allowed per caller per time window
+_RAW_API_KEY_TABLE: dict[str, str] = _load_api_keys_from_env()
 RATE_LIMIT_REQUESTS = int(os.getenv("PROXY_RATE_LIMIT_REQUESTS", "20"))
 RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("PROXY_RATE_LIMIT_WINDOW", "60"))
 
@@ -164,150 +206,169 @@ def _check_rate_limit(caller_id: str) -> None:
 
 @dataclass
 class CallerIdentity:
-    """
-    Represents an authenticated caller — either a human user (Globus) or a
-    service (API key). The rest of the proxy uses this to:
-      - Log requests with attribution
-      - Pass the correct token to Globus Compute
-      - Apply per-caller rate limits
-    """
+    """Represents an authenticated caller — either a Globus user or an API-key service."""
 
-    # Human-readable name for logs: "nassar@uic.edu" or "amplify-service"
     name: str
-
-    # Auth mode used: "globus" or "api_key"
     auth_mode: str
-
-    # For Globus auth: the raw access token to pass to globus_compute_sdk.
-    # For API key auth: None — the proxy uses its own stored Globus credentials.
     globus_token: str | None = None
-
-    # SHA-256 hash of the credential — safe to write to logs
     credential_hash: str = field(default="")
 
     def log_safe_id(self) -> str:
-        """Returns a log-safe string identifying this caller."""
         return f"{self.auth_mode}:{self.name}:{self.credential_hash[:8]}"
 
 
 # =============================================================================
-# GLOBUS TOKEN VALIDATION
+# AUTHENTICATOR — stateful, config-driven auth dependency
 # =============================================================================
+
+
+class Authenticator:
+    """
+    FastAPI-compatible authentication dependency, fully configurable in Python.
+
+    Pass an instance to ``HPCApp`` or ``create_openai_app`` via the ``auth``
+    parameter to configure auth without environment variables::
+
+        from hpc_as_api.auth import AuthConfig, Authenticator
+
+        auth = Authenticator(AuthConfig(
+            globus_client_id="...",
+            globus_client_secret="...",
+            allowed_domains=["ornl.gov"],
+            api_keys={"myservice": "sk-my-key"},
+        ))
+
+        gateway = HPCApp(endpoint_id="...", relay_url="wss://...", auth=auth)
+
+    The ``auth`` parameter on ``HPCApp``/``create_openai_app`` also accepts a
+    plain ``AuthConfig`` and wraps it automatically.
+    """
+
+    def __init__(self, config: "AuthConfig | None" = None):
+        self.config = config or AuthConfig()
+        self._security = HTTPBearer()
+        self._rate_store: dict[str, list[float]] = defaultdict(list)
+
+    async def _validate_globus(self, token: str) -> CallerIdentity | None:
+        cfg = self.config
+        if not cfg.globus_client_id or not cfg.globus_client_secret:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    GLOBUS_INTROSPECT_URL,
+                    auth=(cfg.globus_client_id, cfg.globus_client_secret),
+                    data={"token": token, "include": "identities_set"},
+                )
+            if resp.status_code != 200:
+                return None
+            info = resp.json()
+            if not info.get("active", False):
+                return None
+            email = info.get("email", "") or info.get("username", "")
+            if not email:
+                return None
+            if cfg.allowed_domains:
+                domain = email.split("@")[-1].lower() if "@" in email else ""
+                if domain not in [d.lower() for d in cfg.allowed_domains]:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=(
+                            f"Access restricted to: {', '.join(cfg.allowed_domains)}. "
+                            f"Your identity ({email}) is not from an allowed institution."
+                        ),
+                    )
+            token_hash = hashlib.sha256(token.encode()).hexdigest()
+            logger.info(f"Globus token validated: identity={email}")
+            return CallerIdentity(
+                name=email, auth_mode="globus", globus_token=token, credential_hash=token_hash
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.debug(f"Globus token validation failed: {e}")
+            return None
+
+    def _validate_api_key(self, token: str) -> CallerIdentity | None:
+        service_name = self.config.api_keys.get(token)
+        if not service_name:
+            return None
+        key_hash = hashlib.sha256(token.encode()).hexdigest()
+        logger.info(f"API key validated: service={service_name}, key_hash={key_hash[:16]}")
+        return CallerIdentity(
+            name=service_name, auth_mode="api_key", globus_token=None, credential_hash=key_hash
+        )
+
+    def _check_rate_limit(self, caller_id: str) -> None:
+        cfg = self.config
+        now = time.time()
+        window_start = now - cfg.rate_limit_window
+        self._rate_store[caller_id] = [t for t in self._rate_store[caller_id] if t > window_start]
+        if len(self._rate_store[caller_id]) >= cfg.rate_limit_requests:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"Rate limit exceeded: {cfg.rate_limit_requests} requests per "
+                    f"{cfg.rate_limit_window}s. Please slow down."
+                ),
+            )
+        self._rate_store[caller_id].append(now)
+
+    async def __call__(
+        self,
+        request: Request,
+        credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer()),
+    ) -> CallerIdentity:
+        token = credentials.credentials
+        caller = await self._validate_globus(token)
+        if caller is None:
+            caller = self._validate_api_key(token)
+        if caller is None:
+            logger.warning(
+                f"Authentication failed from {request.client.host if request.client else 'unknown'}"
+            )
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    "Authentication required. Provide either:\n"
+                    "  • A valid Globus access token\n"
+                    "  • A pre-issued service API key\n"
+                    "Contact your proxy administrator for access."
+                ),
+            )
+        self._check_rate_limit(caller.name)
+        logger.info(
+            f"Authenticated: caller={caller.log_safe_id()}, path={request.url.path}, "
+            f"client={request.client.host if request.client else 'unknown'}"
+        )
+        return caller
+
+
+# =============================================================================
+# LEGACY MODULE-LEVEL AUTH FUNCTIONS (backward compatible)
+# =============================================================================
+# These use the module-level globals above. New code should use Authenticator.
+
+_default_authenticator = Authenticator(
+    AuthConfig(
+        globus_client_id=GLOBUS_CLIENT_ID,
+        globus_client_secret=GLOBUS_CLIENT_SECRET,
+        allowed_domains=ALLOWED_DOMAINS,
+        api_keys=_RAW_API_KEY_TABLE,
+        rate_limit_requests=RATE_LIMIT_REQUESTS,
+        rate_limit_window=RATE_LIMIT_WINDOW_SECONDS,
+    )
+)
+
+security = HTTPBearer()
 
 
 async def _validate_globus_token(token: str) -> CallerIdentity | None:
-    """
-    Validate a Globus access token by calling Globus Auth's introspect endpoint.
-
-    The introspect endpoint is an OAuth2 standard — it tells us whether the
-    token is valid, who it belongs to, and what scopes it has.
-
-    We authenticate the introspect request with our own Globus client credentials
-    (GLOBUS_CLIENT_ID + GLOBUS_CLIENT_SECRET). This proves to Globus that the
-    proxy is a registered, trusted application — not just anyone calling introspect.
-
-    Returns CallerIdentity if the token is valid and the caller is authorized.
-    Returns None if the token is invalid, expired, or from a disallowed domain.
-    """
-    if not GLOBUS_CLIENT_ID or not GLOBUS_CLIENT_SECRET:
-        # Globus auth is not configured on this proxy instance — skip
-        return None
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                GLOBUS_INTROSPECT_URL,
-                # HTTP Basic Auth: proxy authenticates itself to Globus
-                auth=(GLOBUS_CLIENT_ID, GLOBUS_CLIENT_SECRET),
-                # The token we want to validate
-                data={"token": token, "include": "identities_set"},
-            )
-
-        if resp.status_code != 200:
-            return None
-
-        info = resp.json()
-
-        # "active": false means the token is expired or revoked
-        if not info.get("active", False):
-            logger.debug("Globus token is inactive (expired or revoked)")
-            return None
-
-        # Extract the user's email from their Globus identity
-        # Globus uses the email field from the identity provider (e.g., UIC's SSO)
-        email = info.get("email", "") or info.get("username", "")
-        if not email:
-            logger.warning("Globus token valid but no email in identity")
-            return None
-
-        # Enforce domain restriction if PROXY_ALLOWED_DOMAINS is configured.
-        # This is where @uic.edu filtering happens.
-        if ALLOWED_DOMAINS:
-            domain = email.split("@")[-1].lower() if "@" in email else ""
-            if domain not in [d.lower() for d in ALLOWED_DOMAINS]:
-                logger.warning(
-                    f"Globus auth rejected: {email} not in allowed domains {ALLOWED_DOMAINS}"
-                )
-                raise HTTPException(
-                    status_code=403,
-                    detail=(
-                        f"Access restricted to users from: {', '.join(ALLOWED_DOMAINS)}. "
-                        f"Your identity ({email}) is not from an allowed institution."
-                    ),
-                )
-
-        token_hash = hashlib.sha256(token.encode()).hexdigest()
-        logger.info(f"Globus token validated: identity={email}")
-
-        return CallerIdentity(
-            name=email,
-            auth_mode="globus",
-            globus_token=token,  # Stored for future per-user job submission (not yet wired through)
-            credential_hash=token_hash,
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.debug(f"Globus token validation failed: {e}")
-        return None
-
-
-# =============================================================================
-# API KEY VALIDATION
-# =============================================================================
+    return await _default_authenticator._validate_globus(token)
 
 
 def _validate_api_key(token: str) -> CallerIdentity | None:
-    """
-    Validate a pre-issued service API key against the key table.
-
-    Used for server-to-server callers (Amplify, LangChain apps, etc.) that
-    cannot present a Globus token because they authenticate their own users
-    through a separate system (e.g., AWS Cognito).
-
-    The raw key never appears in logs — only its SHA-256 hash is recorded.
-    """
-    service_name = _RAW_API_KEY_TABLE.get(token)
-    if not service_name:
-        return None
-
-    key_hash = hashlib.sha256(token.encode()).hexdigest()
-    logger.info(f"API key validated: service={service_name}, key_hash={key_hash[:16]}")
-
-    return CallerIdentity(
-        name=service_name,
-        auth_mode="api_key",
-        globus_token=None,  # Proxy will use its own stored Globus credentials
-        credential_hash=key_hash,
-    )
-
-
-# =============================================================================
-# MAIN AUTH DEPENDENCY
-# =============================================================================
-
-security = HTTPBearer()
+    return _default_authenticator._validate_api_key(token)
 
 
 async def authenticate(
@@ -317,33 +378,13 @@ async def authenticate(
     """
     FastAPI dependency — authenticates every request to the proxy.
 
-    Authentication order:
-      1. Try Globus token introspection (preferred — enables domain-based access control)
-      2. Fall back to API key validation (for service callers)
-      3. Reject with 401 if neither succeeds
-
-    After authentication, applies per-caller rate limiting.
-
-    Usage in routes:
-        @router.post("/v1/chat/completions")
-        async def chat(caller: CallerIdentity = Depends(authenticate)):
-            ...
+    Uses module-level configuration (env vars). For programmatic config,
+    use ``Authenticator(AuthConfig(...))`` instead.
     """
     token = credentials.credentials
-
-    # Step 1: Try Globus token validation
-    # This covers: UIC researchers, any @uic.edu user, anyone who authenticates
-    # via Globus (including users from other InCommon institutions if ALLOWED_DOMAINS
-    # is broadened to include their domain).
     caller = await _validate_globus_token(token)
-
-    # Step 2: Fall back to API key validation
-    # This covers: the Amplify server, LangChain apps, any service caller
-    # that was issued a pre-shared key.
     if caller is None:
         caller = _validate_api_key(token)
-
-    # Step 3: Reject if neither worked
     if caller is None:
         logger.warning(
             f"Authentication failed from {request.client.host if request.client else 'unknown'}"
@@ -352,9 +393,9 @@ async def authenticate(
             status_code=401,
             detail=(
                 "Authentication required. Provide either:\n"
-                "  • A valid Globus access token (for UIC/institutional users)\n"
+                "  • A valid Globus access token (for institutional users)\n"
                 "  • A pre-issued service API key (for application integrations)\n"
-                "Contact your STREAM administrator for access."
+                "Contact your proxy administrator for access."
             ),
         )
 
@@ -451,8 +492,7 @@ def validate_messages(messages: list) -> list:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Message {i}: 'content' must be a string or list, "
-                    f"got {type(content).__name__}"
+                    f"Message {i}: 'content' must be a string or list, got {type(content).__name__}"
                 ),
             )
 

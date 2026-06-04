@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.3.2 (2026-06-04)
+
+### New feature: programmatic auth configuration (`AuthConfig`)
+
+All authentication settings are now configurable as Python arguments — no `.env`
+file or environment variables required. Pass an `AuthConfig` instance to
+`HPCApp` or `create_openai_app`:
+
+```python
+from hpc_as_api import AuthConfig
+from hpc_as_api.presets.openai import create_openai_app
+
+app = create_openai_app(
+    endpoint_id="8d978809-...",
+    models={"llama3": {"hf_name": "meta-llama/Llama-3-70b", "url": "http://gpu01:8000"}},
+    relay_url="wss://relay.example.com",
+    auth=AuthConfig(
+        globus_client_id="your-client-id",
+        globus_client_secret="your-client-secret",
+        allowed_domains=["ornl.gov", "anl.gov"],   # [] = accept any Globus identity
+        api_keys={"myservice": "sk-my-service-key"},
+        rate_limit_requests=20,
+        rate_limit_window=60,
+    ),
+)
+```
+
+Every `AuthConfig` field still falls back to its corresponding environment
+variable when not supplied, so existing env-var-based deployments work without
+any changes.
+
+### Notes
+
+- No breaking changes. `auth` defaults to `None`; existing code works without modification.
+- `PROXY_ALLOWED_DOMAINS` now defaults to `""` (allow any valid Globus identity) instead
+  of `"uic.edu"`. Deployments that relied on the old default should set
+  `PROXY_ALLOWED_DOMAINS=uic.edu` explicitly.
+- `AuthConfig` and `Authenticator` are now exported from the top-level package:
+  `from hpc_as_api import AuthConfig`.
+
 ## 0.3.1 (2026-06-04)
 
 ### New feature: per-user Globus Compute job submission
