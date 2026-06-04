@@ -188,7 +188,7 @@ remote_vllm_inference = _ns["remote_vllm_inference"]
 # The consumer doesn't wait for it — it already got everything via the relay.
 
 _REMOTE_STREAMING_FN_SOURCE = """\
-def remote_vllm_streaming(vllm_url, model, messages, temperature, max_tokens, relay_url, channel_id, relay_secret=""):
+def remote_vllm_streaming(vllm_url, model, messages, temperature, max_tokens, relay_url, channel_id):
     \"\"\"
     Execute a streaming vLLM inference on the HPC cluster.
 
@@ -196,15 +196,19 @@ def remote_vllm_streaming(vllm_url, model, messages, temperature, max_tokens, re
     connects to relay_url/consume/channel_id and receives tokens in real-time
     as the GPU generates them.
 
-    The encryption key is read from os.environ on the HPC endpoint — it is
-    NOT passed as a function argument, so it never travels over Globus Compute's
-    AMQP channel. Set RELAY_ENCRYPTION_KEY in the Globus endpoint's config.yaml.
+    Both relay credentials are read from os.environ on the HPC endpoint —
+    neither is passed as a function argument, so neither travels over Globus
+    Compute's AMQP channel. Set both in the Globus endpoint's config.yaml
+    worker_init:
+        export RELAY_SECRET=<channel-access token>
+        export RELAY_ENCRYPTION_KEY=<32-byte hex AES-256 key>
     \"\"\"
     import json
     import os
     import requests
     from websockets.sync.client import connect as ws_connect
 
+    relay_secret = os.environ.get("RELAY_SECRET", "")
     encryption_key = os.environ.get("RELAY_ENCRYPTION_KEY", "")
 
     def _encrypt(plaintext_json):
@@ -557,8 +561,7 @@ class GlobusComputeClient:
                 logger.warning("Globus Compute authentication required")
                 return False, (
                     "Globus Compute authentication required. "
-                    "Run: globus-compute-endpoint login
-"
+                    "Run: globus-compute-endpoint login\n"
                     "Or visit: https://app.globus.org/"
                 )
             return True, None
@@ -723,8 +726,7 @@ class GlobusComputeClient:
             error_lower = error_str.lower()
 
             if "managerlost" in error_lower or "loss of manager" in error_lower:
-                last_line = error_str.strip().split("
-")[-1].strip().rstrip("-")
+                last_line = error_str.strip().split("\n")[-1].strip().rstrip("-")
                 logger.error(f"HPC compute node lost: {last_line}")
                 return {
                     "error": (
@@ -875,10 +877,10 @@ class GlobusComputeClient:
                 max_tokens,
                 relay_url,
                 channel_id,
-                self.relay_secret,
-                # RELAY_ENCRYPTION_KEY is NOT passed here — the remote function
-                # reads it from os.environ on the endpoint. This way the encryption
-                # key never travels over Globus Compute's AMQP channel.
+                # No relay credentials are passed as task arguments. Both
+                # RELAY_SECRET and RELAY_ENCRYPTION_KEY are read from
+                # os.environ on the endpoint (set in worker_init). This way
+                # neither travels over Globus Compute's AMQP channel.
             )
 
             logger.info(f"Streaming job submitted (channel={channel_id[:8]})")

@@ -1,31 +1,36 @@
 """
-hpc-as-api — OpenAI-compatible API gateway for HPC clusters via Globus Compute.
+hpc-as-api — HTTP gateway for HPC functions via Globus Compute + WebSocket relay.
 
-Quick start (programmatic use):
-    from hpc_as_api.compute import GlobusComputeClient
+Two usage styles:
 
-    client = GlobusComputeClient(
-        endpoint_id="8d978809-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-        models={
-            "qwen25-vl-72b": {
-                "hf_name": "Qwen/Qwen2.5-VL-72B-Instruct-AWQ",
-                "url": "http://ghi2-002:8000",
-                "context_reserve_output": 4096,
-            }
-        },
-    )
-    result = await client.submit_inference(
-        messages=[{"role": "user", "content": "Hello!"}],
-        model="qwen25-vl-72b",
-    )
+1. Domain-agnostic (new in v0.2.0):
+   Stream any HPC function output through a WebSocket relay::
 
-Quick start (FastAPI service):
-    # Set env vars: GLOBUS_COMPUTE_ENDPOINT_ID, HPC_MODELS, RELAY_URL, ...
-    # Then run: uvicorn hpc_as_api.app:app --host 0.0.0.0 --port 8001
+       from hpc_as_api.core import HPCApp
+       from pydantic import BaseModel
 
-    # Or embed the router in your existing FastAPI app:
-    from hpc_as_api.app import router
-    app.include_router(router, prefix="/hpc")
+       class Request(BaseModel):
+           steps: int = 100
+
+       def my_fn(steps, relay_url, channel_id, relay_secret=""):
+           from streamrelay import RelayProducer
+           with RelayProducer(relay_url, channel_id, relay_secret=relay_secret) as r:
+               for i in range(steps):
+                   r.send_token(f"step {i}\\n")
+
+       app = HPCApp(endpoint_id="...", relay_url="wss://...").mount("/run", my_fn, Request).create_app()
+
+2. OpenAI-compatible LLM preset:
+   Drop-in OpenAI-compatible gateway for vLLM on HPC::
+
+       from hpc_as_api.presets.openai import create_openai_app
+       app = create_openai_app(endpoint_id="...", models={...}, relay_url="wss://...")
+
+3. Low-level Globus Compute client::
+
+       from hpc_as_api.compute import GlobusComputeClient
+       client = GlobusComputeClient(endpoint_id="...", models={...})
+       result = await client.submit_inference(messages=[...], model="qwen25-vl-72b")
 """
 
 from hpc_as_api.utils import (
@@ -35,17 +40,22 @@ from hpc_as_api.utils import (
     strip_old_images,
 )
 
-# GlobusComputeClient depends on globus_compute_sdk and globus_sdk, which are
-# optional (hpc-as-api[globus]). Import lazily so the base package works
-# without them installed.
+try:
+    from hpc_as_api.core import HPCApp
+    _CORE_AVAILABLE = True
+except ImportError:
+    _CORE_AVAILABLE = False
+
+# GlobusComputeClient depends on globus_compute_sdk (optional extra [globus]).
 try:
     from hpc_as_api.compute import GlobusComputeClient
     _GLOBUS_AVAILABLE = True
 except ImportError:
     _GLOBUS_AVAILABLE = False
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = [
+    "HPCApp",
     "GlobusComputeClient",
     "extract_text_content",
     "has_images",
