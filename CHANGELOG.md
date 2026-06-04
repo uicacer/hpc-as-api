@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.3.1 (2026-06-04)
+
+### New feature: per-user Globus Compute job submission
+
+`GlobusComputeClient.submit_streaming_inference()` now accepts an optional
+`globus_token` parameter. When provided, the job is submitted under the
+caller's own Globus identity rather than the client's stored credentials,
+giving per-user SLURM-level attribution on the HPC cluster.
+
+```python
+result = await client.submit_streaming_inference(
+    messages=messages,
+    model="qwen25-vl-72b",
+    relay_url="wss://relay.example.com",
+    globus_token=caller_globus_access_token,  # optional
+)
+```
+
+A short-lived `Executor` is created per request for token-authenticated calls
+(the persistent executor is tied to stored credentials). The first request from
+a Globus user pays the ~1.5 s AMQP setup cost; API-key callers are unaffected.
+
+### Notes
+
+- No breaking changes. `globus_token` defaults to `None`; existing code works without modification.
+- When `globus_token` is `None`, behavior is identical to 0.3.0.
+
 ## 0.3.0 (2026-06-04)
 
 ### Security

@@ -61,10 +61,11 @@ import time
 import warnings
 from typing import Any
 
-from globus_compute_sdk import Executor
+from globus_compute_sdk import Client, Executor
 from globus_compute_sdk.errors.error_types import DeserializationError, TaskExecutionFailed
 from globus_compute_sdk.serialize import AllCodeStrategies, ComputeSerializer
 from globus_sdk import GlobusAPIError
+from globus_sdk.authorizers import AccessTokenAuthorizer
 from globus_sdk.login_flows.command_line_login_flow_manager import CommandLineLoginFlowEOFError
 
 from hpc_as_api.utils import strip_old_images
@@ -494,6 +495,20 @@ class GlobusComputeClient:
             self._executor = None
             logger.info("Executor reset — will reconnect on next request")
 
+    def _make_executor_for_token(self, globus_token: str) -> Executor:
+        """
+        Create a short-lived Executor authenticated with the caller's own Globus token.
+
+        Used for per-user job submission (Mode A-1). Jobs run under the caller's
+        Globus identity, giving per-user SLURM attribution on the HPC cluster.
+        Not persistent — created per request, shut down after submission.
+        """
+        authorizer = AccessTokenAuthorizer(globus_token)
+        client = Client(authorizer=authorizer)
+        exe = Executor(endpoint_id=self.endpoint_id, client=client)
+        exe.serializer = ComputeSerializer(strategy_code=AllCodeStrategies())
+        return exe
+
     def shutdown(self):
         """Clean up the persistent Executor. Call during app shutdown."""
         logger.info("Shutting down GlobusComputeClient...")
@@ -788,6 +803,7 @@ class GlobusComputeClient:
         max_tokens: int | None = None,
         model: str = "",
         relay_url: str = "",
+        globus_token: str | None = None,
     ) -> dict[str, Any]:
         """
         Submit a streaming inference job. Returns a channel_id immediately.
@@ -811,6 +827,9 @@ class GlobusComputeClient:
             max_tokens: Max tokens to generate
             model: Model name as registered in the models dict
             relay_url: WebSocket URL of the relay server
+            globus_token: Optional caller Globus access token. When provided, the job is
+                submitted under the caller's own Globus identity for per-user SLURM
+                attribution. When None, the client's stored credentials are used.
 
         Returns:
             {"channel_id": "uuid"} on success
@@ -842,20 +861,30 @@ class GlobusComputeClient:
                 "error_type": "payload_too_large",
             }
 
-        is_authenticated, auth_message = self.ensure_authenticated()
-        if not is_authenticated:
-            return {
-                "error": auth_message or "Globus Compute authentication required",
-                "error_type": "AuthenticationError",
-                "auth_required": True,
-            }
+        # Skip stored-credential auth check when the caller supplies their own token.
+        if not globus_token:
+            is_authenticated, auth_message = self.ensure_authenticated()
+            if not is_authenticated:
+                return {
+                    "error": auth_message or "Globus Compute authentication required",
+                    "error_type": "AuthenticationError",
+                    "auth_required": True,
+                }
 
         # Generate a UUID for this streaming session.
         # Both producer (HPC) and consumer (your app) use this to join the same relay channel.
         channel_id = str(uuid.uuid4())
 
         try:
-            gce = self._get_executor()
+            # Use caller's own Globus token when provided (per-user SLURM attribution),
+            # otherwise use the persistent executor with stored credentials.
+            own_executor = None
+            if globus_token:
+                own_executor = self._make_executor_for_token(globus_token)
+                gce = own_executor
+                logger.info(f"Using caller-token executor (per-user attribution, channel={channel_id[:8]})")
+            else:
+                gce = self._get_executor()
 
             logger.info(
                 f"Submitting streaming inference: model={model} → {hf_name}, "
@@ -884,13 +913,29 @@ class GlobusComputeClient:
             )
 
             logger.info(f"Streaming job submitted (channel={channel_id[:8]})")
+
+            # Clean up the per-request executor after submission (caller-token mode only).
+            if own_executor is not None:
+                try:
+                    own_executor.shutdown(wait=False, cancel_futures=False)
+                except Exception:
+                    pass
+
             return {"channel_id": channel_id}
 
         except Exception as e:
             logger.error(f"Failed to submit streaming job: {e}", exc_info=True)
+
+            if own_executor is not None:
+                try:
+                    own_executor.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
+
             error_str = str(e).lower()
             if "unable to open database file" in error_str or "login_required" in error_str:
-                self._reset_executor()
+                if own_executor is None:
+                    self._reset_executor()
                 return {
                     "error": "Globus Compute authentication required.",
                     "error_type": "AuthenticationError",
