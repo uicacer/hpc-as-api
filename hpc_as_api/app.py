@@ -61,7 +61,7 @@ from hpc_as_api.crypto import decrypt_message
 # =========================================================================
 # Configuration — all from environment variables
 # =========================================================================
-PROXY_HOST = os.getenv("HPC_PROXY_HOST", "0.0.0.0"  # nosec B104)
+PROXY_HOST = os.getenv("HPC_PROXY_HOST", "0.0.0.0")  # nosec B104
 PROXY_PORT = int(os.getenv("HPC_PROXY_PORT", "8001"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
@@ -369,9 +369,7 @@ async def _route_via_globus_compute_streaming(model, messages, temperature, max_
                         chunk = {
                             "choices": [{"index": 0, "delta": {"content": msg["content"]}}],
                         }
-                        yield f"data: {json.dumps(chunk)}
-
-"
+                        yield f"data: {json.dumps(chunk)}\n\n"
 
                     elif msg["type"] == "done":
                         usage = msg.get("usage", {})
@@ -382,12 +380,8 @@ async def _route_via_globus_compute_streaming(model, messages, temperature, max_
                                 ],
                                 "usage": usage,
                             }
-                            yield f"data: {json.dumps(final_chunk)}
-
-"
-                        yield "data: [DONE]
-
-"
+                            yield f"data: {json.dumps(final_chunk)}\n\n"
+                        yield "data: [DONE]\n\n"
                         break
 
                     elif msg["type"] == "error":
@@ -398,12 +392,8 @@ async def _route_via_globus_compute_streaming(model, messages, temperature, max_
         except Exception as e:
             logger.error(f"Relay connection failed: {e}", exc_info=True)
             error_chunk = {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
-            yield f"data: {json.dumps(error_chunk)}
-
-"
-            yield "data: [DONE]
-
-"
+            yield f"data: {json.dumps(error_chunk)}\n\n"
+            yield "data: [DONE]\n\n"
 
     return StreamingResponse(sse_generator(), media_type="text/event-stream")
 
@@ -443,8 +433,7 @@ async def _route_via_direct(model, messages, temperature, max_tokens, stream):
                     async def stream_generator():
                         async for line in response.aiter_lines():
                             if line.strip():
-                                yield line + "
-"
+                                yield line + "\n"
 
                     return StreamingResponse(stream_generator(), media_type="text/event-stream")
             else:
@@ -487,9 +476,7 @@ def _convert_json_to_sse_stream(json_response: dict):
     async def sse_generator():
         choices = json_response.get("choices", [])
         if not choices:
-            yield "data: [DONE]
-
-"
+            yield "data: [DONE]\n\n"
             return
 
         choice = choices[0]
@@ -512,9 +499,7 @@ def _convert_json_to_sse_stream(json_response: dict):
                     {"index": 0, "delta": {"role": role, "content": ""}, "finish_reason": None}
                 ],
             }
-            yield f"data: {json.dumps(chunk)}
-
-"
+            yield f"data: {json.dumps(chunk)}\n\n"
 
         # Content chunks: group into small word batches
         if content:
@@ -529,9 +514,7 @@ def _convert_json_to_sse_stream(json_response: dict):
                         {"index": 0, "delta": {"content": text_chunk}, "finish_reason": None}
                     ],
                 }
-                yield f"data: {json.dumps(chunk)}
-
-"
+                yield f"data: {json.dumps(chunk)}\n\n"
                 await asyncio.sleep(delay_between_chunks)
 
         # Final chunk signals completion and includes usage stats
@@ -542,12 +525,8 @@ def _convert_json_to_sse_stream(json_response: dict):
             ],
             "usage": json_response.get("usage", {}),
         }
-        yield f"data: {json.dumps(chunk)}
-
-"
-        yield "data: [DONE]
-
-"
+        yield f"data: {json.dumps(chunk)}\n\n"
+        yield "data: [DONE]\n\n"
 
     return StreamingResponse(sse_generator(), media_type="text/event-stream")
 

@@ -4,15 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hpc-as-api"
-version = "0.1.0"
-description = "OpenAI-compatible API gateway for HPC clusters via Globus Compute"
+version = "0.3.0"
+description = "HTTP gateway for any HPC function via Globus Compute + WebSocket relay"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
 authors = [
     { name = "Anas Nassar", email = "nassar@uic.edu" },
 ]
-keywords = ["hpc", "globus-compute", "openai", "api-gateway", "llm", "slurm", "vllm"]
+keywords = ["hpc", "globus-compute", "streaming", "api-gateway", "slurm", "llm", "vllm", "openai"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
@@ -30,7 +30,7 @@ dependencies = [
     "httpx>=0.28",
     "websockets>=13.0",
     "cryptography>=43.0",
-    "streamrelay>=0.2.0",
+    "streamrelay>=0.3.0",
 ]
 
 [project.optional-dependencies]
@@ -46,7 +46,7 @@ dev = [
 ]
 
 [project.scripts]
-hpc-as-api = "hpc_as_api.app:main"
+hpc-as-api = "hpc_as_api.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/uicacer/hpc-as-api"
