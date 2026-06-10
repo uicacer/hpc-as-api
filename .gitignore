@@ -38,10 +38,8 @@ htmlcov/
 proxy.env
 secrets/
 
-# Benchmarks — scripts committed, results gitignored
-benchmarks/results/*.json
-benchmarks/results/*.csv
-benchmarks/results/*.txt
+# Benchmarks — entire folder is local-only, never commit
+benchmarks/
 
 # OS
 .DS_Store

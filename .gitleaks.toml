@@ -1,19 +1,34 @@
 [extend]
 useDefault = true
 
-# Allowlist placeholder/example credentials in tutorial and documentation files.
-# These are illustrative values, not real secrets.
+# ── Custom rules ─────────────────────────────────────────────────────────────
+
+[[rules]]
+id = "hpc-as-api-stream-key"
+description = "hpc-as-api / streamrelay API key"
+regex = '''sk-stream-[a-zA-Z0-9_-]{16,}'''
+tags = ["api-key", "hpc-as-api"]
+
+[[rules]]
+id = "relay-secret-hex"
+description = "RELAY_SECRET or RELAY_ENCRYPTION_KEY value (64-char hex)"
+regex = '''(?i)(relay_secret|relay_encryption_key)\s*=\s*[0-9a-f]{40,}'''
+tags = ["secret", "relay"]
+
+# ── Allowlists ───────────────────────────────────────────────────────────────
+
 [[allowlists]]
-description = "Example/placeholder API keys in tutorial and documentation"
+description = "Placeholder/example credentials in tutorial and documentation"
 paths = [
     "docs/tutorial.ipynb",
     "docs/deployment.md",
 ]
 regexes = [
-    # Generic placeholder patterns
-    '''YOUR-API-KEY''',
-    '''YOUR_API_KEY''',
+    # Generic placeholders
+    '''YOUR[-_]API[-_]KEY''',
     '''<your[-_]api[-_]key>''',
-    # Redacted example token shown in tutorial (16 x's after the prefix)
-    '''sk-stream-amplify-x{8,}''',
+    '''sk-stream-[a-z]+-x{8,}''',
+    '''sk-your[-_]''',
+    # Hex placeholders (e.g. 000...000 or aaa...aaa)
+    '''[0-9a-f]{40,}''',
 ]
