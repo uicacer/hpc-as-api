@@ -1,9 +1,17 @@
 """
-hpc-as-api — HTTP gateway for HPC functions via Globus Compute + WebSocket relay.
+hpc-as-api — Domain-agnostic HTTP gateway for any HPC function via Globus Compute + WebSocket relay.
+
+Turn any Python function running on an HPC cluster into a streaming HTTP endpoint.
+Register your function, define its input schema with Pydantic, and get a production-ready
+REST API with authentication, rate limiting, and live SSE streaming — no open ports,
+no VPN, no firewall changes required.
+
+Any workload that produces incremental output works: simulation checkpoints, solver
+residuals, genome alignment progress, LLM tokens, molecular dynamics snapshots, etc.
 
 Two usage styles:
 
-1. Domain-agnostic (new in v0.2.0):
+1. Domain-agnostic (primary interface):
    Stream any HPC function output through a WebSocket relay::
 
        from hpc_as_api.core import HPCApp
@@ -20,7 +28,7 @@ Two usage styles:
 
        app = HPCApp(endpoint_id="...", relay_url="wss://...").mount("/run", my_fn, Request).create_app()
 
-2. OpenAI-compatible LLM preset:
+2. OpenAI-compatible LLM preset (built-in application of the framework):
    Drop-in OpenAI-compatible gateway for vLLM on HPC::
 
        from hpc_as_api.presets.openai import create_openai_app
@@ -56,7 +64,7 @@ try:
 except ImportError:
     _GLOBUS_AVAILABLE = False
 
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 __all__ = [
     "AuthConfig",
     "Authenticator",

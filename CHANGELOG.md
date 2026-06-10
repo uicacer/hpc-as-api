@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.4 (2026-06-10)
+
+### Messaging: domain-agnostic positioning throughout
+
+All public-facing materials now consistently present `hpc-as-api` as a
+**domain-agnostic HTTP gateway for any HPC function** — not as an LLM-specific tool.
+
+- **README**: Rewritten to lead with `HPCApp` and the general-purpose streaming
+  gateway pattern. The simulation example appears before the LLM preset. "OpenAI-compatible
+  gateway" is now framed as a built-in preset, not the product's identity.
+- **paper/paper.md**: Title changed to *"A Domain-Agnostic HTTP Gateway for HPC Functions…"*.
+  `HPCApp`, `make_app()`, and the framework architecture are now described as first-class
+  subjects. The LLM preset is introduced as one application of the framework.
+- **`hpc_as_api/__init__.py`**: Module docstring updated to lead with the domain-agnostic
+  description and mark the LLM preset as "built-in application of the framework".
+- **`pyproject.toml`**: Description updated to "Domain-agnostic HTTP gateway…"; keywords
+  updated to add `domain-agnostic` and `scientific-computing`, remove `openai`.
+
+No API or behavior changes.
+
 ## 0.3.3 (2026-06-10)
 
 ### Refactor: `make_app()` factory — multiple independent instances, no env-var injection
