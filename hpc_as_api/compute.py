@@ -233,10 +233,18 @@ def remote_vllm_streaming(vllm_url, model, messages, temperature, max_tokens, re
 
     ws = None
     try:
+        # Build an explicit SSL context using the system CA bundle.
+        # websockets.sync.client in GCE worker processes can fail TLS without
+        # this — the worker's PYTHONPATH may shadow the default ssl cert store.
+        import ssl as _ssl
+        _ssl_ctx = _ssl.create_default_context()
+        _ssl_ctx.load_verify_locations(_ssl.get_default_verify_paths().cafile or "/etc/pki/tls/cert.pem")
+
         # Connect to relay as PRODUCER.
         # Secret is sent as first JSON message AFTER the WebSocket handshake
         # (not in the URL as ?secret=) so it never appears in HTTP access logs.
-        ws = ws_connect(f"{relay_url}/produce/{channel_id}")
+        _ws_kwargs = {"ssl": _ssl_ctx} if relay_url.startswith("wss://") else {}
+        ws = ws_connect(f"{relay_url}/produce/{channel_id}", **_ws_kwargs)
         if relay_secret:
             import json as _json
             ws.send(_json.dumps({"type": "auth", "secret": relay_secret}))
