@@ -50,10 +50,10 @@ def create_openai_app(
     relay_url: str | None = None,
     relay_secret: str = "",
     relay_encryption_key: str = "",
-    host: str = "0.0.0.0",  # nosec B104
+    host: str = "0.0.0.0",  # nosec B104  # noqa: S104
     port: int = 8001,
     log_level: str = "INFO",
-    auth: "AuthConfig | Authenticator | None" = None,
+    auth: AuthConfig | Authenticator | None = None,
 ) -> FastAPI:
     """
     Create an OpenAI-compatible FastAPI gateway for LLM inference on HPC.
@@ -134,7 +134,7 @@ def main():
     """CLI entry point for the OpenAI-compatible LLM gateway."""
     import uvicorn
 
-    host = os.getenv("HPC_PROXY_HOST", "0.0.0.0")  # nosec B104
+    host = os.getenv("HPC_PROXY_HOST", "0.0.0.0")  # nosec B104  # noqa: S104
     port = int(os.getenv("HPC_PROXY_PORT", "8001"))
     log_level = os.getenv("LOG_LEVEL", "INFO").lower()
 

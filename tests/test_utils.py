@@ -1,6 +1,5 @@
 """Tests for hpc_as_api.utils — message utility functions."""
 
-import pytest
 from hpc_as_api.utils import (
     count_images,
     extract_text_content,
@@ -8,10 +7,10 @@ from hpc_as_api.utils import (
     strip_old_images,
 )
 
-
 # ---------------------------------------------------------------------------
 # extract_text_content
 # ---------------------------------------------------------------------------
+
 
 def test_extract_text_plain_string():
     assert extract_text_content("Hello world") == "Hello world"
@@ -42,6 +41,7 @@ def test_extract_text_multiple_text_blocks():
 # has_images
 # ---------------------------------------------------------------------------
 
+
 def test_has_images_false_for_text_only():
     messages = [{"role": "user", "content": "Hello"}]
     assert has_images(messages) is False
@@ -67,6 +67,7 @@ def test_has_images_empty():
 # ---------------------------------------------------------------------------
 # count_images
 # ---------------------------------------------------------------------------
+
 
 def test_count_images_none():
     messages = [{"role": "user", "content": "text"}]
@@ -99,6 +100,7 @@ def test_count_images_across_messages():
 # ---------------------------------------------------------------------------
 # strip_old_images
 # ---------------------------------------------------------------------------
+
 
 def test_strip_old_images_empty():
     assert strip_old_images([]) == []

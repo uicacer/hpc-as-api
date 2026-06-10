@@ -123,21 +123,15 @@ class AuthConfig:
     # Allowed Globus email domains. Empty list = accept any valid Globus identity.
     # Example: ["uic.edu", "anl.gov"] restricts to those institutions.
     allowed_domains: list[str] = field(
-        default_factory=lambda: [
-            d.strip() for d in os.getenv("PROXY_ALLOWED_DOMAINS", "").split(",") if d.strip()
-        ]
+        default_factory=lambda: [d.strip() for d in os.getenv("PROXY_ALLOWED_DOMAINS", "").split(",") if d.strip()]
     )
 
     # API keys for service-to-service callers. Keys are mapped to service names
     # for logging. Populated from PROXY_API_KEY_<NAME> env vars by default.
     api_keys: dict[str, str] = field(default_factory=lambda: _load_api_keys_from_env())
 
-    rate_limit_requests: int = field(
-        default_factory=lambda: int(os.getenv("PROXY_RATE_LIMIT_REQUESTS", "20"))
-    )
-    rate_limit_window: int = field(
-        default_factory=lambda: int(os.getenv("PROXY_RATE_LIMIT_WINDOW", "60"))
-    )
+    rate_limit_requests: int = field(default_factory=lambda: int(os.getenv("PROXY_RATE_LIMIT_REQUESTS", "20")))
+    rate_limit_window: int = field(default_factory=lambda: int(os.getenv("PROXY_RATE_LIMIT_WINDOW", "60")))
 
 
 def _load_api_keys_from_env() -> dict[str, str]:
@@ -156,9 +150,7 @@ def _load_api_keys_from_env() -> dict[str, str]:
 # New code should use Authenticator(AuthConfig()) instead.
 GLOBUS_CLIENT_ID = os.getenv("GLOBUS_CLIENT_ID", "")
 GLOBUS_CLIENT_SECRET = os.getenv("GLOBUS_CLIENT_SECRET", "")  # pragma: allowlist secret
-ALLOWED_DOMAINS = [
-    d.strip() for d in os.getenv("PROXY_ALLOWED_DOMAINS", "").split(",") if d.strip()
-]
+ALLOWED_DOMAINS = [d.strip() for d in os.getenv("PROXY_ALLOWED_DOMAINS", "").split(",") if d.strip()]
 _RAW_API_KEY_TABLE: dict[str, str] = _load_api_keys_from_env()
 RATE_LIMIT_REQUESTS = int(os.getenv("PROXY_RATE_LIMIT_REQUESTS", "20"))
 RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("PROXY_RATE_LIMIT_WINDOW", "60"))
@@ -280,9 +272,7 @@ class Authenticator:
                     )
             token_hash = hashlib.sha256(token.encode()).hexdigest()
             logger.info(f"Globus token validated: identity={email}")
-            return CallerIdentity(
-                name=email, auth_mode="globus", globus_token=token, credential_hash=token_hash
-            )
+            return CallerIdentity(name=email, auth_mode="globus", globus_token=token, credential_hash=token_hash)
         except HTTPException:
             raise
         except Exception as e:
@@ -295,9 +285,7 @@ class Authenticator:
             return None
         key_hash = hashlib.sha256(token.encode()).hexdigest()
         logger.info(f"API key validated: service={service_name}, key_hash={key_hash[:16]}")
-        return CallerIdentity(
-            name=service_name, auth_mode="api_key", globus_token=None, credential_hash=key_hash
-        )
+        return CallerIdentity(name=service_name, auth_mode="api_key", globus_token=None, credential_hash=key_hash)
 
     def _check_rate_limit(self, caller_id: str) -> None:
         cfg = self.config
@@ -324,9 +312,7 @@ class Authenticator:
         if caller is None:
             caller = self._validate_api_key(token)
         if caller is None:
-            logger.warning(
-                f"Authentication failed from {request.client.host if request.client else 'unknown'}"
-            )
+            logger.warning(f"Authentication failed from {request.client.host if request.client else 'unknown'}")
             raise HTTPException(
                 status_code=401,
                 detail=(
@@ -386,9 +372,7 @@ async def authenticate(
     if caller is None:
         caller = _validate_api_key(token)
     if caller is None:
-        logger.warning(
-            f"Authentication failed from {request.client.host if request.client else 'unknown'}"
-        )
+        logger.warning(f"Authentication failed from {request.client.host if request.client else 'unknown'}")
         raise HTTPException(
             status_code=401,
             detail=(
@@ -447,15 +431,11 @@ def validate_messages(messages: list) -> list:
         raise HTTPException(status_code=400, detail="'messages' cannot be empty")
 
     if len(messages) > max_messages:
-        raise HTTPException(
-            status_code=400, detail=f"Too many messages: {len(messages)} > {max_messages} limit"
-        )
+        raise HTTPException(status_code=400, detail=f"Too many messages: {len(messages)} > {max_messages} limit")
 
     for i, msg in enumerate(messages):
         if not isinstance(msg, dict):
-            raise HTTPException(
-                status_code=400, detail=f"Message {i}: must be a dict, got {type(msg).__name__}"
-            )
+            raise HTTPException(status_code=400, detail=f"Message {i}: must be a dict, got {type(msg).__name__}")
 
         role = msg.get("role")
         if role not in allowed_roles:
@@ -473,10 +453,7 @@ def validate_messages(messages: list) -> list:
             if len(content) > max_content_chars:
                 raise HTTPException(
                     status_code=400,
-                    detail=(
-                        f"Message {i}: content too large "
-                        f"({len(content):,} chars > {max_content_chars:,} limit)"
-                    ),
+                    detail=(f"Message {i}: content too large ({len(content):,} chars > {max_content_chars:,} limit)"),
                 )
         elif isinstance(content, list):
             # Multimodal content: list of {"type": "text", "text": "..."} or
@@ -485,15 +462,11 @@ def validate_messages(messages: list) -> list:
             # by vLLM itself when the request arrives on the cluster.
             for j, part in enumerate(content):
                 if not isinstance(part, dict):
-                    raise HTTPException(
-                        status_code=400, detail=f"Message {i}, content part {j}: must be a dict"
-                    )
+                    raise HTTPException(status_code=400, detail=f"Message {i}, content part {j}: must be a dict")
         else:
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    f"Message {i}: 'content' must be a string or list, got {type(content).__name__}"
-                ),
+                detail=(f"Message {i}: 'content' must be a string or list, got {type(content).__name__}"),
             )
 
     return messages

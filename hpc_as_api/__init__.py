@@ -68,10 +68,10 @@ __version__ = "0.3.4"
 __all__ = [
     "AuthConfig",
     "Authenticator",
-    "HPCApp",
     "GlobusComputeClient",
+    "HPCApp",
+    "count_images",
     "extract_text_content",
     "has_images",
-    "count_images",
     "strip_old_images",
 ]

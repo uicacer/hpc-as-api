@@ -1,14 +1,14 @@
 """Tests for hpc_as_api.app — FastAPI routes, factory independence, and auth wiring."""
 
-import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from fastapi.testclient import TestClient
 
+import pytest
+from fastapi.testclient import TestClient
 
 # ---------------------------------------------------------------------------
 # Shared Globus mock fixture
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def mock_globus(monkeypatch):
@@ -26,6 +26,7 @@ def mock_globus(monkeypatch):
         monkeypatch.setitem(__import__("sys").modules, mod, MagicMock())
 
     import sys
+
     for key in list(sys.modules.keys()):
         if key.startswith("hpc_as_api"):
             sys.modules.pop(key)
@@ -35,17 +36,20 @@ def mock_globus(monkeypatch):
 # Helper: build a TestClient from make_app() with direct (no-Globus) mode
 # ---------------------------------------------------------------------------
 
+
 def _direct_client(mock_globus, models=None, **kwargs):
     from hpc_as_api.app import make_app
     from hpc_as_api.auth import AuthConfig, Authenticator
 
     # Open authenticator — no credentials needed
-    auth = Authenticator(AuthConfig(
-        globus_client_id="",
-        globus_client_secret="",
-        allowed_domains=[],
-        api_keys={"testkey": "test-service"},
-    ))
+    auth = Authenticator(
+        AuthConfig(
+            globus_client_id="",
+            globus_client_secret="",
+            allowed_domains=[],
+            api_keys={"testkey": "test-service"},
+        )
+    )
     _models = models or {"test-model": {"hf_name": "org/TestModel", "url": "http://fake:8000"}}
     app = make_app(use_globus_compute=False, models=_models, auth=auth, **kwargs)
     return TestClient(app, raise_server_exceptions=True)
@@ -54,6 +58,7 @@ def _direct_client(mock_globus, models=None, **kwargs):
 # ---------------------------------------------------------------------------
 # /health
 # ---------------------------------------------------------------------------
+
 
 def test_health_returns_200(mock_globus):
     client = _direct_client(mock_globus)
@@ -78,6 +83,7 @@ def test_health_mode_direct(mock_globus):
 # /v1/models — requires auth
 # ---------------------------------------------------------------------------
 
+
 def test_models_requires_auth(mock_globus):
     client = _direct_client(mock_globus)
     resp = client.get("/v1/models")
@@ -97,13 +103,13 @@ def test_models_returns_list_with_valid_key(mock_globus):
 # Factory independence — two instances must not share state
 # ---------------------------------------------------------------------------
 
+
 def test_create_openai_app_independence(mock_globus):
     """Two calls to create_openai_app() must return independent FastAPI instances."""
-    from hpc_as_api.presets.openai import create_openai_app
     from hpc_as_api.auth import AuthConfig
+    from hpc_as_api.presets.openai import create_openai_app
 
-    auth = AuthConfig(globus_client_id="", globus_client_secret="", allowed_domains=[],
-                      api_keys={"k": "svc"})
+    auth = AuthConfig(globus_client_id="", globus_client_secret="", allowed_domains=[], api_keys={"k": "svc"})
 
     app_a = create_openai_app(
         models={"model-a": {"hf_name": "org/A", "url": "http://a:8000"}},
@@ -117,8 +123,12 @@ def test_create_openai_app_independence(mock_globus):
     assert app_a is not app_b, "create_openai_app() must return new instances each call"
 
     with TestClient(app_a) as ca, TestClient(app_b) as cb:
-        models_a = {m["gateway_name"] for m in ca.get("/v1/models", headers={"Authorization": "Bearer k"}).json()["data"]}
-        models_b = {m["gateway_name"] for m in cb.get("/v1/models", headers={"Authorization": "Bearer k"}).json()["data"]}
+        models_a = {
+            m["gateway_name"] for m in ca.get("/v1/models", headers={"Authorization": "Bearer k"}).json()["data"]
+        }
+        models_b = {
+            m["gateway_name"] for m in cb.get("/v1/models", headers={"Authorization": "Bearer k"}).json()["data"]
+        }
 
     assert "model-a" in models_a
     assert "model-b" not in models_a
@@ -130,25 +140,32 @@ def test_create_openai_app_independence(mock_globus):
 # /v1/chat/completions — direct mode
 # ---------------------------------------------------------------------------
 
+
 def test_chat_completions_requires_auth(mock_globus):
     client = _direct_client(mock_globus)
-    resp = client.post("/v1/chat/completions", json={
-        "model": "test-model",
-        "messages": [{"role": "user", "content": "hi"}],
-    })
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
     assert resp.status_code in (401, 403, 422)
 
 
 def test_chat_completions_direct_mode_calls_vllm(mock_globus):
     """In direct mode, the gateway should proxy the request to vLLM."""
-    import httpx
     from hpc_as_api.app import make_app
     from hpc_as_api.auth import AuthConfig, Authenticator
 
-    auth = Authenticator(AuthConfig(
-        globus_client_id="", globus_client_secret="",
-        allowed_domains=[], api_keys={"mykey": "test-service"},
-    ))
+    auth = Authenticator(
+        AuthConfig(
+            globus_client_id="",
+            globus_client_secret="",
+            allowed_domains=[],
+            api_keys={"mykey": "test-service"},
+        )
+    )
     app = make_app(
         use_globus_compute=False,
         models={"m": {"hf_name": "org/M", "url": "http://fake:8000"}},
@@ -175,9 +192,11 @@ def test_chat_completions_direct_mode_calls_vllm(mock_globus):
 # Globus token wiring — caller.globus_token forwarded to submit_streaming_inference
 # ---------------------------------------------------------------------------
 
+
 def test_globus_token_passed_to_submit_streaming(mock_globus):
     """When auth_mode=='globus', caller.globus_token must reach submit_streaming_inference."""
     import asyncio
+
     from hpc_as_api.app import _route_via_globus_compute_streaming
     from hpc_as_api.auth import CallerIdentity
 
@@ -198,9 +217,15 @@ def test_globus_token_passed_to_submit_streaming(mock_globus):
         try:
             asyncio.get_event_loop().run_until_complete(
                 _route_via_globus_compute_streaming(
-                    model="m", messages=[{"role": "user", "content": "hi"}],
-                    temperature=0.7, max_tokens=10, caller=caller,
-                    client=mock_client, relay_url="ws://fake", relay_secret="", relay_enc_key="",
+                    model="m",
+                    messages=[{"role": "user", "content": "hi"}],
+                    temperature=0.7,
+                    max_tokens=10,
+                    caller=caller,
+                    client=mock_client,
+                    relay_url="ws://fake",
+                    relay_secret="",
+                    relay_enc_key="",
                 )
             )
         except Exception:
@@ -214,6 +239,7 @@ def test_globus_token_passed_to_submit_streaming(mock_globus):
 def test_api_key_caller_sends_no_globus_token(mock_globus):
     """API-key callers (auth_mode='api_key') must pass globus_token=None."""
     import asyncio
+
     from hpc_as_api.app import _route_via_globus_compute_streaming
     from hpc_as_api.auth import CallerIdentity
 
@@ -228,9 +254,15 @@ def test_api_key_caller_sends_no_globus_token(mock_globus):
         try:
             asyncio.get_event_loop().run_until_complete(
                 _route_via_globus_compute_streaming(
-                    model="m", messages=[{"role": "user", "content": "hi"}],
-                    temperature=0.7, max_tokens=10, caller=caller,
-                    client=mock_client, relay_url="ws://fake", relay_secret="", relay_enc_key="",
+                    model="m",
+                    messages=[{"role": "user", "content": "hi"}],
+                    temperature=0.7,
+                    max_tokens=10,
+                    caller=caller,
+                    client=mock_client,
+                    relay_url="ws://fake",
+                    relay_secret="",
+                    relay_enc_key="",
                 )
             )
         except Exception:

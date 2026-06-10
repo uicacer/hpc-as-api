@@ -1,11 +1,11 @@
 """Tests for GlobusComputeClient — config, model resolution, payload size check."""
 
 import json
-import os
-import pytest
 
 # GlobusComputeClient imports globus_compute_sdk at module level — mock it before import
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
+
+import pytest
 
 
 @pytest.fixture()
@@ -32,9 +32,7 @@ def mock_globus_modules(monkeypatch):
         "globus_compute_sdk.errors.error_types",
         fake_sdk.errors.error_types,
     )
-    monkeypatch.setitem(
-        __import__("sys").modules, "globus_compute_sdk.serialize", fake_sdk.serialize
-    )
+    monkeypatch.setitem(__import__("sys").modules, "globus_compute_sdk.serialize", fake_sdk.serialize)
     monkeypatch.setitem(__import__("sys").modules, "globus_sdk", fake_globus_sdk)
     monkeypatch.setitem(
         __import__("sys").modules,
@@ -57,16 +55,18 @@ def mock_globus_modules(monkeypatch):
 def make_client(mock_globus_modules, **kwargs):
     """Import GlobusComputeClient after mocks are in place and instantiate it."""
     # Force re-import in case a cached version is already in sys.modules
-    import importlib
     import sys
+
     sys.modules.pop("hpc_as_api.compute", None)
     from hpc_as_api.compute import GlobusComputeClient
+
     return GlobusComputeClient(**kwargs)
 
 
 # ---------------------------------------------------------------------------
 # Constructor / config resolution
 # ---------------------------------------------------------------------------
+
 
 def test_endpoint_from_arg(mock_globus_modules):
     client = make_client(mock_globus_modules, endpoint_id="test-uuid-123")
@@ -112,6 +112,7 @@ def test_is_available_false(mock_globus_modules):
 # _resolve_model
 # ---------------------------------------------------------------------------
 
+
 def test_resolve_known_model(mock_globus_modules):
     models = {
         "qwen72b": {
@@ -139,6 +140,7 @@ def test_resolve_unknown_model_uses_name_directly(mock_globus_modules, monkeypat
 # ---------------------------------------------------------------------------
 # _estimate_payload_size
 # ---------------------------------------------------------------------------
+
 
 def test_estimate_payload_size(mock_globus_modules):
     client = make_client(mock_globus_modules, endpoint_id="x")

@@ -132,7 +132,7 @@ class HPCApp:
         relay_encryption_key: str = "",
         title: str = "HPC Gateway",
         description: str = "HTTP gateway for HPC functions via Globus Compute",
-        auth: "AuthConfig | Authenticator | None" = None,
+        auth: AuthConfig | Authenticator | None = None,
     ):
         self.endpoint_id = endpoint_id or os.getenv("GLOBUS_COMPUTE_ENDPOINT_ID")
         self.relay_url = relay_url or os.getenv("RELAY_URL", "")
@@ -146,7 +146,7 @@ class HPCApp:
         from hpc_as_api.auth import AuthConfig, Authenticator
 
         if isinstance(auth, AuthConfig):
-            self._authenticator: "Authenticator | None" = Authenticator(auth)
+            self._authenticator: Authenticator | None = Authenticator(auth)
         else:
             self._authenticator = auth  # Authenticator instance or None
 
@@ -158,7 +158,7 @@ class HPCApp:
         output_handler: Callable[[dict], str | None] = _default_output_handler,
         auth: bool = True,
         description: str = "",
-    ) -> "HPCApp":
+    ) -> HPCApp:
         """Register a remote HPC function as a streaming HTTP endpoint.
 
         Args:
@@ -219,17 +219,11 @@ class HPCApp:
                         relay_secret=relay_secret,
                     )
                     _client[0] = client
-                    logger.info(
-                        f"HPCApp ready: endpoint={endpoint_id}, "
-                        f"routes={[r.path for r in routes_snapshot]}"
-                    )
+                    logger.info(f"HPCApp ready: endpoint={endpoint_id}, routes={[r.path for r in routes_snapshot]}")
                 else:
                     logger.warning("HPCApp: no endpoint_id — Globus Compute unavailable")
             except ImportError:
-                logger.warning(
-                    "HPCApp: globus-compute-sdk not installed. "
-                    "Install with: pip install hpc-as-api[globus]"
-                )
+                logger.warning("HPCApp: globus-compute-sdk not installed. Install with: pip install hpc-as-api[globus]")
 
             yield
 
@@ -260,9 +254,9 @@ class HPCApp:
                 router=router,
                 route=route,
                 client_ref=_client,
-                relay_url=relay_url,
-                relay_secret=relay_secret,
-                relay_encryption_key=relay_encryption_key,
+                relay_url=relay_url or "",
+                relay_secret=relay_secret or "",
+                relay_encryption_key=relay_encryption_key or "",
                 authenticator=self._authenticator,
             )
 
@@ -277,7 +271,7 @@ def _add_route(
     relay_url: str,
     relay_secret: str,
     relay_encryption_key: str,
-    authenticator: "Authenticator | None" = None,
+    authenticator: Authenticator | None = None,
 ) -> None:
     """Register one POST endpoint on the router for the given route."""
     from hpc_as_api.auth import Authenticator, authenticate
@@ -297,19 +291,18 @@ def _add_route(
     async def _endpoint(body: schema_cls):  # type: ignore[valid-type]
         client = client_ref[0]
         if not client or not client.is_available():
-            raise HTTPException(
-                status_code=503, detail="Globus Compute not configured or unavailable"
-            )
+            raise HTTPException(status_code=503, detail="Globus Compute not configured or unavailable")
         if not relay_url:
             raise HTTPException(status_code=503, detail="RELAY_URL not configured")
 
         channel_id = str(uuid.uuid4())
-        kwargs = body.model_dump()
+        kwargs = body.model_dump()  # type: ignore[attr-defined]
 
         # Apply image stripping and payload size check when the schema has a
         # "messages" field (OpenAI-style payloads).  Other schemas pass through.
         if "messages" in kwargs:
             import json as _json
+
             from hpc_as_api.utils import strip_old_images
 
             kwargs["messages"] = strip_old_images(kwargs["messages"])
@@ -353,7 +346,7 @@ def _add_route(
                     if relay_secret:
                         await ws.send(json.dumps({"type": "auth", "secret": relay_secret}))
                     async for raw in ws:
-                        if relay_encryption_key and _decrypt:
+                        if relay_encryption_key and _decrypt is not None:
                             raw = _decrypt(relay_encryption_key, raw)
                         msg = json.loads(raw)
                         result = output_handler(msg)

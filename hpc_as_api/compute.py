@@ -75,9 +75,7 @@ logger = logging.getLogger(__name__)
 # Suppress the Globus SDK's "Environment differences detected" warning.
 # This fires when the local Python version (e.g., 3.12.12) differs slightly
 # from the endpoint workers (e.g., 3.12.3). Minor patch differences are harmless.
-warnings.filterwarnings(
-    "ignore", message=r"[\s\S]*Environment differences detected", category=UserWarning
-)
+warnings.filterwarnings("ignore", message=r"[\s\S]*Environment differences detected", category=UserWarning)
 
 # Default task timeout — how long to wait for a Globus Compute job to return.
 # Override with GLOBUS_TASK_TIMEOUT env var or pass timeout= to submit methods.
@@ -167,8 +165,8 @@ def remote_vllm_inference(vllm_url, model, messages, temperature, max_tokens, st
         return {"error": f"{type(e).__name__}: {e}", "error_type": type(e).__name__}
 """
 
-_ns = {}
-exec(compile(_REMOTE_FN_SOURCE, "<remote_vllm_inference>", "exec"), _ns)  # nosec B102
+_ns: dict[str, Any] = {}
+exec(compile(_REMOTE_FN_SOURCE, "<remote_vllm_inference>", "exec"), _ns)  # nosec B102  # noqa: S102
 remote_vllm_inference = _ns["remote_vllm_inference"]
 
 
@@ -307,8 +305,8 @@ def remote_vllm_streaming(vllm_url, model, messages, temperature, max_tokens, re
     return {"ok": True, "tokens_sent": tokens_sent}
 """
 
-_ns2 = {}
-exec(compile(_REMOTE_STREAMING_FN_SOURCE, "<remote_vllm_streaming>", "exec"), _ns2)  # nosec B102
+_ns2: dict[str, Any] = {}
+exec(compile(_REMOTE_STREAMING_FN_SOURCE, "<remote_vllm_streaming>", "exec"), _ns2)  # nosec B102  # noqa: S102
 remote_vllm_streaming = _ns2["remote_vllm_streaming"]
 
 
@@ -404,9 +402,7 @@ class GlobusComputeClient:
 
         # Payload size limit — reject messages that would exceed Globus's hard limit.
         # 8 MB default leaves 2 MB headroom below the 10 MB hard limit.
-        self.max_payload_bytes = max_payload_bytes or int(
-            os.getenv("HPC_MAX_PAYLOAD_BYTES", str(8 * 1024 * 1024))
-        )
+        self.max_payload_bytes = max_payload_bytes or int(os.getenv("HPC_MAX_PAYLOAD_BYTES", str(8 * 1024 * 1024)))
 
         # Task timeout — how long to wait for a Globus job to return.
         self.task_timeout = task_timeout or _DEFAULT_TASK_TIMEOUT
@@ -417,13 +413,11 @@ class GlobusComputeClient:
 
         if self.endpoint_id:
             logger.info(
-                f"GlobusComputeClient initialized: endpoint={self.endpoint_id}, "
-                f"models={list(self.models.keys())}"
+                f"GlobusComputeClient initialized: endpoint={self.endpoint_id}, models={list(self.models.keys())}"
             )
         else:
             logger.warning(
-                "No Globus Compute endpoint configured. "
-                "Pass endpoint_id= or set GLOBUS_COMPUTE_ENDPOINT_ID."
+                "No Globus Compute endpoint configured. Pass endpoint_id= or set GLOBUS_COMPUTE_ENDPOINT_ID."
             )
 
     def is_available(self) -> bool:
@@ -482,7 +476,7 @@ class GlobusComputeClient:
             # AllCodeStrategies tries multiple serialization methods (dill by-value,
             # dill by-reference, cloudpickle) to find one that works across Python
             # version differences between local and endpoint.
-            self._executor.serializer = ComputeSerializer(strategy_code=AllCodeStrategies())
+            self._executor.serializer = ComputeSerializer(strategy_code=AllCodeStrategies())  # type: ignore[attr-defined]
             logger.info("Executor ready")
         return self._executor
 
@@ -525,7 +519,7 @@ class GlobusComputeClient:
                     globus_app_module._globus_app = None
                 if hasattr(globus_app_module, "GLOBUS_APP"):
                     globus_app_module.GLOBUS_APP = None
-            except Exception:
+            except Exception:  # noqa: S110
                 pass
             self._globus_app = None
 
@@ -565,7 +559,7 @@ class GlobusComputeClient:
             return True, "Credentials reloaded successfully"
         except Exception as e:
             logger.error(f"Failed to reload credentials: {e}")
-            return False, f"Failed to reload credentials: {str(e)}"
+            return False, f"Failed to reload credentials: {e!s}"
 
     def ensure_authenticated(self, force_refresh: bool = False) -> tuple[bool, str | None]:
         """
@@ -586,7 +580,7 @@ class GlobusComputeClient:
             return True, None
         except Exception as e:
             logger.error(f"Authentication check failed: {e}")
-            return False, f"Authentication check failed: {str(e)}"
+            return False, f"Authentication check failed: {e!s}"
 
     def _estimate_payload_size(self, messages: list[dict]) -> int:
         """
@@ -862,10 +856,7 @@ class GlobusComputeClient:
             size_mb = estimated_size / (1024 * 1024)
             limit_mb = self.max_payload_bytes / (1024 * 1024)
             return {
-                "error": (
-                    f"Image payload too large ({size_mb:.1f} MB). "
-                    f"Globus Compute limit is {limit_mb:.0f} MB."
-                ),
+                "error": (f"Image payload too large ({size_mb:.1f} MB). Globus Compute limit is {limit_mb:.0f} MB."),
                 "error_type": "payload_too_large",
             }
 
@@ -890,9 +881,7 @@ class GlobusComputeClient:
             if globus_token:
                 own_executor = self._make_executor_for_token(globus_token)
                 gce = own_executor
-                logger.info(
-                    f"Using caller-token executor (per-user attribution, channel={channel_id[:8]})"
-                )
+                logger.info(f"Using caller-token executor (per-user attribution, channel={channel_id[:8]})")
             else:
                 gce = self._get_executor()
 
@@ -928,7 +917,7 @@ class GlobusComputeClient:
             if own_executor is not None:
                 try:
                     own_executor.shutdown(wait=False, cancel_futures=False)
-                except Exception:
+                except Exception:  # noqa: S110
                     pass
 
             return {"channel_id": channel_id}
@@ -939,7 +928,7 @@ class GlobusComputeClient:
             if own_executor is not None:
                 try:
                     own_executor.shutdown(wait=False, cancel_futures=True)
-                except Exception:
+                except Exception:  # noqa: S110
                     pass
 
             error_str = str(e).lower()

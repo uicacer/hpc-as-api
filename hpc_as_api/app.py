@@ -52,7 +52,7 @@ from typing import TYPE_CHECKING
 import httpx
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from websockets.asyncio.client import connect as ws_connect  # noqa: F401 — patched in tests
+from websockets.asyncio.client import connect as ws_connect
 
 from hpc_as_api.auth import AuthConfig, Authenticator, CallerIdentity, validate_messages
 from hpc_as_api.crypto import decrypt_message
@@ -65,7 +65,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Standalone defaults (env vars, resolved once at import time)
 # ---------------------------------------------------------------------------
-PROXY_HOST = os.getenv("HPC_PROXY_HOST", "0.0.0.0")  # nosec B104
+PROXY_HOST = os.getenv("HPC_PROXY_HOST", "0.0.0.0")  # nosec B104  # noqa: S104
 PROXY_PORT = int(os.getenv("HPC_PROXY_PORT", "8001"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
@@ -123,11 +123,7 @@ def make_app(
 
     _relay_url = relay_url if relay_url is not None else os.getenv("RELAY_URL", "")
     _relay_secret = relay_secret if relay_secret is not None else os.getenv("RELAY_SECRET", "")
-    _relay_enc_key = (
-        relay_encryption_key
-        if relay_encryption_key is not None
-        else os.getenv("RELAY_ENCRYPTION_KEY", "")
-    )
+    _relay_enc_key = relay_encryption_key if relay_encryption_key is not None else os.getenv("RELAY_ENCRYPTION_KEY", "")
 
     if use_globus_compute is not None:
         _use_globus = use_globus_compute
@@ -160,18 +156,12 @@ def make_app(
                 )
                 _client[0] = client
                 logger.info(
-                    f"HPC Gateway ready: endpoint={_endpoint_id}, "
-                    f"models={list(_models.keys())}, relay={_relay_url}"
+                    f"HPC Gateway ready: endpoint={_endpoint_id}, models={list(_models.keys())}, relay={_relay_url}"
                 )
             except ImportError:
-                logger.warning(
-                    "globus-compute-sdk not installed. "
-                    "Install with: pip install hpc-as-api[globus]"
-                )
+                logger.warning("globus-compute-sdk not installed. Install with: pip install hpc-as-api[globus]")
         elif _use_globus:
-            logger.warning(
-                "USE_GLOBUS_COMPUTE=true but GLOBUS_COMPUTE_ENDPOINT_ID is not set"
-            )
+            logger.warning("USE_GLOBUS_COMPUTE=true but GLOBUS_COMPUTE_ENDPOINT_ID is not set")
         else:
             logger.info(f"HPC Gateway ready (direct mode): vllm={_direct_url}")
 
@@ -258,19 +248,25 @@ def make_app(
         max_tokens = body.get("max_tokens")
 
         logger.info(
-            f"Chat request: caller={caller.log_safe_id()}, model={model}, "
-            f"messages={len(messages)}, stream={stream}"
+            f"Chat request: caller={caller.log_safe_id()}, model={model}, messages={len(messages)}, stream={stream}"
         )
 
         if _use_globus:
             return await _route_via_globus_compute(
-                model, messages, temperature, max_tokens, stream, caller,
-                _client, _relay_url, _relay_secret, _relay_enc_key, _endpoint_id,
+                model,
+                messages,
+                temperature,
+                max_tokens,
+                stream,
+                caller,
+                _client,
+                _relay_url,
+                _relay_secret,
+                _relay_enc_key,
+                _endpoint_id,
             )
         else:
-            return await _route_via_direct(
-                model, messages, temperature, max_tokens, stream, _direct_url
-            )
+            return await _route_via_direct(model, messages, temperature, max_tokens, stream, _direct_url)
 
     fastapi_app.include_router(_router)
     return fastapi_app
@@ -282,8 +278,17 @@ def make_app(
 
 
 async def _route_via_globus_compute(
-    model, messages, temperature, max_tokens, stream, caller,
-    client_ref, relay_url, relay_secret, relay_enc_key, endpoint_id,
+    model,
+    messages,
+    temperature,
+    max_tokens,
+    stream,
+    caller,
+    client_ref,
+    relay_url,
+    relay_secret,
+    relay_enc_key,
+    endpoint_id,
 ):
     client = client_ref[0]
     if not client or not client.is_available():
@@ -292,8 +297,15 @@ async def _route_via_globus_compute(
     if stream and relay_url:
         try:
             return await _route_via_globus_compute_streaming(
-                model, messages, temperature, max_tokens, caller,
-                client, relay_url, relay_secret, relay_enc_key,
+                model,
+                messages,
+                temperature,
+                max_tokens,
+                caller,
+                client,
+                relay_url,
+                relay_secret,
+                relay_enc_key,
             )
         except Exception as e:
             logger.warning(f"Relay streaming failed — falling back to batch mode: {e}")
@@ -329,8 +341,15 @@ async def _route_via_globus_compute(
 
 
 async def _route_via_globus_compute_streaming(
-    model, messages, temperature, max_tokens, caller,
-    client, relay_url, relay_secret, relay_enc_key,
+    model,
+    messages,
+    temperature,
+    max_tokens,
+    caller,
+    client,
+    relay_url,
+    relay_secret,
+    relay_enc_key,
 ):
     # Pass the caller's Globus token when available — gives per-user SLURM attribution.
     globus_token = caller.globus_token if caller.auth_mode == "globus" else None
@@ -378,9 +397,7 @@ async def _route_via_globus_compute_streaming(
                         usage = msg.get("usage", {})
                         if usage:
                             final_chunk = {
-                                "choices": [
-                                    {"index": 0, "delta": {}, "finish_reason": "stop"}
-                                ],
+                                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                                 "usage": usage,
                             }
                             yield f"data: {json.dumps(final_chunk)}\n\n"
@@ -388,9 +405,7 @@ async def _route_via_globus_compute_streaming(
                         break
 
                     elif msg["type"] == "error":
-                        logger.error(
-                            f"Relay error on channel {channel_id[:8]}: {msg.get('message')}"
-                        )
+                        logger.error(f"Relay error on channel {channel_id[:8]}: {msg.get('message')}")
 
         except Exception as e:
             logger.error(f"Relay connection failed: {e}", exc_info=True)
@@ -478,17 +493,30 @@ def _convert_json_to_sse_stream(json_response: dict):
         }
 
         if role:
-            yield f"data: {json.dumps({**chunk_base, 'choices': [{'index': 0, 'delta': {'role': role, 'content': ''}, 'finish_reason': None}]})}\n\n"
+            role_chunk = {
+                **chunk_base,
+                "choices": [{"index": 0, "delta": {"role": role, "content": ""}, "finish_reason": None}],
+            }
+            yield f"data: {json.dumps(role_chunk)}\n\n"
 
         if content:
             words = content.split(" ")
             for i in range(0, len(words), words_per_chunk):
                 word_group = words[i : i + words_per_chunk]
                 text_chunk = " ".join(word_group) if i == 0 else " " + " ".join(word_group)
-                yield f"data: {json.dumps({**chunk_base, 'choices': [{'index': 0, 'delta': {'content': text_chunk}, 'finish_reason': None}]})}\n\n"
+                text_chunk_data = {
+                    **chunk_base,
+                    "choices": [{"index": 0, "delta": {"content": text_chunk}, "finish_reason": None}],
+                }
+                yield f"data: {json.dumps(text_chunk_data)}\n\n"
                 await asyncio.sleep(delay_between_chunks)
 
-        yield f"data: {json.dumps({**chunk_base, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': choice.get('finish_reason', 'stop')}], 'usage': json_response.get('usage', {})})}\n\n"
+        finish_chunk = {
+            **chunk_base,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": choice.get("finish_reason", "stop")}],
+            "usage": json_response.get("usage", {}),
+        }
+        yield f"data: {json.dumps(finish_chunk)}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(sse_generator(), media_type="text/event-stream")

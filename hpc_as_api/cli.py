@@ -57,7 +57,8 @@ def _require_root_or_sudo(action: str):
 def cmd_serve(args):
     """Start the gateway server in the foreground."""
     import uvicorn
-    from hpc_as_api.app import app, PROXY_HOST, PROXY_PORT, LOG_LEVEL
+
+    from hpc_as_api.app import LOG_LEVEL, PROXY_HOST, PROXY_PORT, app
 
     host = getattr(args, "host", None) or PROXY_HOST
     port = getattr(args, "port", None) or PROXY_PORT
@@ -135,14 +136,8 @@ def _install_launchd(args):
                     k, v = line.split("=", 1)
                     env_dict[k.strip()] = v.strip()
 
-    env_xml = "\n".join(
-        f"            <key>{k}</key><string>{v}</string>" for k, v in env_dict.items()
-    )
-    env_block = (
-        f"<key>EnvironmentVariables</key>\n        <dict>\n{env_xml}\n        </dict>"
-        if env_dict
-        else ""
-    )
+    env_xml = "\n".join(f"            <key>{k}</key><string>{v}</string>" for k, v in env_dict.items())
+    env_block = f"<key>EnvironmentVariables</key>\n        <dict>\n{env_xml}\n        </dict>" if env_dict else ""
 
     plist = textwrap.dedent(f"""\
         <?xml version="1.0" encoding="UTF-8"?>
@@ -221,8 +216,9 @@ def cmd_status(args):
     host = getattr(args, "host", "127.0.0.1") or "127.0.0.1"
     port = getattr(args, "port", 8001) or 8001
     try:
-        import httpx
         import json
+
+        import httpx
 
         resp = httpx.get(f"http://{host}:{port}/health", timeout=5.0)
         print(f"\n[hpc-as-api] Health check → HTTP {resp.status_code}")

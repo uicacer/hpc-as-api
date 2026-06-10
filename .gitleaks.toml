@@ -27,7 +27,8 @@ regexes = [
     # Generic placeholders
     '''YOUR[-_]API[-_]KEY''',
     '''<your[-_]api[-_]key>''',
-    '''sk-stream-[a-z]+-x{8,}''',
+    # Placeholder sk-stream- keys: x, y, or z repeated 8+ times after prefix
+    '''sk-stream-[a-z]+-[xyzXYZ]{8,}''',
     '''sk-your[-_]''',
     # Hex placeholders (e.g. 000...000 or aaa...aaa)
     '''[0-9a-f]{40,}''',
