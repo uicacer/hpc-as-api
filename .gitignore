@@ -38,6 +38,11 @@ htmlcov/
 proxy.env
 secrets/
 
+# Benchmarks — scripts committed, results gitignored
+benchmarks/results/*.json
+benchmarks/results/*.csv
+benchmarks/results/*.txt
+
 # OS
 .DS_Store
 Thumbs.db
