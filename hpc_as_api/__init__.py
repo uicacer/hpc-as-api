@@ -56,7 +56,7 @@ try:
 except ImportError:
     _GLOBUS_AVAILABLE = False
 
-__version__ = "0.2.0"
+__version__ = "0.3.3"
 __all__ = [
     "AuthConfig",
     "Authenticator",

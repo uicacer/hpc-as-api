@@ -38,6 +38,11 @@ def mock_globus_modules(monkeypatch):
     monkeypatch.setitem(__import__("sys").modules, "globus_sdk", fake_globus_sdk)
     monkeypatch.setitem(
         __import__("sys").modules,
+        "globus_sdk.authorizers",
+        fake_globus_sdk.authorizers,
+    )
+    monkeypatch.setitem(
+        __import__("sys").modules,
         "globus_sdk.login_flows",
         fake_globus_sdk.login_flows,
     )

@@ -23,11 +23,15 @@ Usage::
         relay_url="wss://relay.stream.acer.uic.edu",
     )
     # uvicorn mymodule:app --host 0.0.0.0 --port 8001
+
+Multiple independent instances in the same process::
+
+    app_prod = create_openai_app(endpoint_id="uuid-1", models={...}, relay_url="wss://...")
+    app_dev  = create_openai_app(endpoint_id="uuid-2", models={...}, relay_url="wss://...")
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from typing import TYPE_CHECKING
@@ -60,6 +64,10 @@ def create_openai_app(
     - ``GET /v1/models``            — list available models (auth required)
     - ``POST /v1/chat/completions`` — OpenAI-compatible chat (auth required)
     - ``POST /reload-auth``         — reload Globus credentials from disk
+
+    Each call returns a **new, independent** FastAPI app — calling this function
+    twice with different arguments gives two isolated gateways that can run in the
+    same process without interfering with each other.
 
     Args:
         endpoint_id: Globus Compute endpoint UUID.
@@ -109,43 +117,17 @@ def create_openai_app(
         hpc_app = create_openai_app(endpoint_id="...", models={...}, relay_url="...")
         main_app.mount("/hpc", hpc_app)
     """
-    from hpc_as_api.auth import AuthConfig
+    from hpc_as_api.app import make_app
 
-    # Resolve configuration: explicit args > env vars
-    _endpoint_id = endpoint_id or os.getenv("GLOBUS_COMPUTE_ENDPOINT_ID")
-    _relay_url = relay_url or os.getenv("RELAY_URL", "")
-    _relay_secret = relay_secret or os.getenv("RELAY_SECRET", "")
-    _relay_encryption_key = relay_encryption_key or os.getenv("RELAY_ENCRYPTION_KEY", "")
-
-    # Inject into env vars so hpc_as_api.app picks them up at import time
-    if models is not None:
-        os.environ["HPC_MODELS"] = json.dumps(models)
-    if _endpoint_id:
-        os.environ["GLOBUS_COMPUTE_ENDPOINT_ID"] = _endpoint_id
-    if _relay_url:
-        os.environ["RELAY_URL"] = _relay_url
-    if _relay_secret:
-        os.environ["RELAY_SECRET"] = _relay_secret
-    if _relay_encryption_key:
-        os.environ["RELAY_ENCRYPTION_KEY"] = _relay_encryption_key
-
-    # If auth config was passed, inject Globus credentials into env so that the
-    # app module (which reads from env at import time) picks them up too.
-    if auth is not None:
-        cfg = auth if isinstance(auth, AuthConfig) else auth.config
-        if cfg.globus_client_id:
-            os.environ["GLOBUS_CLIENT_ID"] = cfg.globus_client_id
-        if cfg.globus_client_secret:
-            os.environ["GLOBUS_CLIENT_SECRET"] = cfg.globus_client_secret
-        if cfg.allowed_domains:
-            os.environ["PROXY_ALLOWED_DOMAINS"] = ",".join(cfg.allowed_domains)
-        # Inject API keys as PROXY_API_KEY_<NAME> env vars
-        for key, name in cfg.api_keys.items():
-            os.environ[f"PROXY_API_KEY_{name.upper()}"] = key
-
-    from hpc_as_api.app import app as _app
-
-    return _app
+    return make_app(
+        endpoint_id=endpoint_id,
+        models=models,
+        relay_url=relay_url or os.getenv("RELAY_URL", ""),
+        relay_secret=relay_secret or os.getenv("RELAY_SECRET", ""),
+        relay_encryption_key=relay_encryption_key or os.getenv("RELAY_ENCRYPTION_KEY", ""),
+        auth=auth,
+        title="HPC Gateway (OpenAI-compatible)",
+    )
 
 
 def main():

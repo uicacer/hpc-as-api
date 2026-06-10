@@ -376,8 +376,8 @@ wheels = [
 ]
 
 [[package]]
-name = "hpc-gateway"
-version = "0.1.0"
+name = "hpc-as-api"
+version = "0.3.3"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
@@ -411,7 +411,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "ruff", marker = "extra == 'dev'" },
-    { name = "streamrelay", specifier = ">=0.2.0" },
+    { name = "streamrelay", specifier = ">=0.3.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
     { name = "websockets", specifier = ">=13.0" },
 ]
@@ -857,15 +857,15 @@ wheels = [
 
 [[package]]
 name = "streamrelay"
-version = "0.2.0"
+version = "0.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2f/50/dc6fb3c813184733398a342e904742a33958f1159ebf23506c6d910db41a/streamrelay-0.2.0.tar.gz", hash = "sha256:ab3207ba9ead5808a36b560fb5130e3034b3a478c616c152e8cddb263ce20035", size = 798523, upload-time = "2026-05-22T13:43:41.018Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ad/3f/7520dfad172ebff19fd78b1ff91b730261f23bff293bf72675c3ae89a44d/streamrelay-0.3.0.tar.gz", hash = "sha256:917e69235ff54a3610b6f47c148bf0b6835b435ffca075963d7417b5cc66824d", size = 812965, upload-time = "2026-05-28T04:02:06.741Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3f/91/7faad3342cd448f6fbc66cc4d486ae313ca07c909d32b83998667c43d4c0/streamrelay-0.2.0-py3-none-any.whl", hash = "sha256:ea1cb29149e8faedcc89fc43b9e160c72cd8b27674dc4eea2b6db8e1ff267253", size = 35290, upload-time = "2026-05-22T13:43:39.735Z" },
+    { url = "https://files.pythonhosted.org/packages/f1/f3/a7710c535f9ac8c4536a6af6bdeca6129adccc101c893200d615b6f94c25/streamrelay-0.3.0-py3-none-any.whl", hash = "sha256:f0f09def22ac1bfdca8d931644bda30d32498f849a6fff0b398ad3da2b9bd7bc", size = 39323, upload-time = "2026-05-28T04:02:05.294Z" },
 ]
 
 [[package]]

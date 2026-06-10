@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.3.3 (2026-06-10)
+
+### Refactor: `make_app()` factory — multiple independent instances, no env-var injection
+
+`app.py` now exposes a `make_app()` factory function.  Every call returns a
+fresh, independent `FastAPI` instance that captures its configuration in closures
+— there are no module-level globals involved in request handling.
+
+**Before (0.3.x):** `create_openai_app()` in `presets/openai.py` worked by
+injecting arguments into `os.environ` and then importing the cached module-level
+singleton.  Calling it a second time with different arguments silently had no
+effect.
+
+**After:** `create_openai_app()` calls `make_app()` directly.  Each call returns
+a genuinely independent app — two gateways with different endpoints, models, or
+auth settings can live in the same process without interfering.
+
+### Fix: per-user Globus token fully wired end-to-end
+
+`app.py` now passes `caller.globus_token` to `submit_streaming_inference()` when
+the caller authenticated with a Globus token.  In 0.3.1–0.3.2, `submit_streaming_inference()`
+gained the `globus_token=` parameter but `app.py` never forwarded it.
+
+### Fix: `HPCApp` payload size check
+
+`HPCApp._add_route` now strips old images and enforces the Globus payload limit
+before submitting any job with a `messages` field.  Previously only
+`GlobusComputeClient.submit_inference()` did this check; the domain-agnostic
+`HPCApp` path bypassed it entirely.
+
+### Fix: version mismatch
+
+`__init__.py.__version__` was stuck at `"0.2.0"` while `pyproject.toml` had
+already advanced to `0.3.2`.  Both are now `"0.3.3"`.
+
+### Fix: `globus_sdk.authorizers` mock missing in test_compute.py
+
+The `mock_globus_modules` fixture now also stubs `globus_sdk.authorizers`, which
+`compute.py` imports at module level via `AccessTokenAuthorizer`.
+
+### Notes
+
+- No breaking changes.  `app.py` still exposes a module-level `app` singleton
+  (built from env vars) and a `router` for embedding; both continue to work.
+- `make_app()` is now the recommended entry point for programmatic configuration.
+
 ## 0.3.2 (2026-06-04)
 
 ### New feature: programmatic auth configuration (`AuthConfig`)

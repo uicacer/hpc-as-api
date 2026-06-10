@@ -306,6 +306,26 @@ def _add_route(
         channel_id = str(uuid.uuid4())
         kwargs = body.model_dump()
 
+        # Apply image stripping and payload size check when the schema has a
+        # "messages" field (OpenAI-style payloads).  Other schemas pass through.
+        if "messages" in kwargs:
+            import json as _json
+            from hpc_as_api.utils import strip_old_images
+
+            kwargs["messages"] = strip_old_images(kwargs["messages"])
+            payload_bytes = len(_json.dumps(kwargs["messages"]).encode())
+            max_bytes = client.max_payload_bytes
+            if payload_bytes > max_bytes:
+                size_mb = payload_bytes / (1024 * 1024)
+                limit_mb = max_bytes / (1024 * 1024)
+                raise HTTPException(
+                    status_code=413,
+                    detail=(
+                        f"Payload too large ({size_mb:.1f} MB > {limit_mb:.0f} MB limit). "
+                        "Reduce image size or use fewer images."
+                    ),
+                )
+
         try:
             gce = client._get_executor()
             gce.submit(
