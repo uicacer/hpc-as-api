@@ -130,7 +130,11 @@ class AuthConfig:
     # for logging. Populated from PROXY_API_KEY_<NAME> env vars by default.
     api_keys: dict[str, str] = field(default_factory=lambda: _load_api_keys_from_env())
 
-    rate_limit_requests: int = field(default_factory=lambda: int(os.getenv("PROXY_RATE_LIMIT_REQUESTS", "20")))
+    # Rate limiting is per-key over a sliding window.
+    # Default is intentionally high: shared classroom keys (300+ students) must
+    # not be throttled here — vLLM's internal queue handles backpressure.
+    # Lower this only to catch runaway scripts, not to shape normal load.
+    rate_limit_requests: int = field(default_factory=lambda: int(os.getenv("PROXY_RATE_LIMIT_REQUESTS", "10000")))
     rate_limit_window: int = field(default_factory=lambda: int(os.getenv("PROXY_RATE_LIMIT_WINDOW", "60")))
 
 
