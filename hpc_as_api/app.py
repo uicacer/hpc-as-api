@@ -395,9 +395,12 @@ async def _route_via_globus_compute_streaming(
                     msg = json.loads(msg_str)
 
                     if msg["type"] == "token":
-                        chunk = {
-                            "choices": [{"index": 0, "delta": {"content": msg["content"]}}],
-                        }
+                        delta: dict = {}
+                        if "content" in msg:
+                            delta["content"] = msg["content"]
+                        if "reasoning_content" in msg:
+                            delta["reasoning_content"] = msg["reasoning_content"]
+                        chunk = {"choices": [{"index": 0, "delta": delta}]}
                         yield f"data: {json.dumps(chunk)}\n\n"
 
                     elif msg["type"] == "done":

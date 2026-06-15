@@ -294,8 +294,14 @@ def remote_vllm_streaming(
                 continue
             delta = choices[0].get("delta", {})
             content = delta.get("content")
-            if content:
-                _send(ws, {"type": "token", "content": content})
+            reasoning = delta.get("reasoning_content")
+            if content or reasoning:
+                msg: dict = {"type": "token"}
+                if content:
+                    msg["content"] = content
+                if reasoning:
+                    msg["reasoning_content"] = reasoning
+                _send(ws, msg)
                 tokens_sent += 1
             if chunk.get("usage"):
                 usage = chunk["usage"]
