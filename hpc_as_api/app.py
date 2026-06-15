@@ -246,6 +246,7 @@ def make_app(
         temperature = body.get("temperature", 0.7)
         stream = body.get("stream", False)
         max_tokens = body.get("max_tokens")
+        chat_template_kwargs = body.get("chat_template_kwargs")
 
         logger.info(
             f"Chat request: caller={caller.log_safe_id()}, model={model}, messages={len(messages)}, stream={stream}"
@@ -264,6 +265,7 @@ def make_app(
                 _relay_secret,
                 _relay_enc_key,
                 _endpoint_id,
+                chat_template_kwargs=chat_template_kwargs,
             )
         else:
             return await _route_via_direct(model, messages, temperature, max_tokens, stream, _direct_url)
@@ -289,6 +291,7 @@ async def _route_via_globus_compute(
     relay_secret,
     relay_enc_key,
     endpoint_id,
+    chat_template_kwargs=None,
 ):
     client = client_ref[0]
     if not client or not client.is_available():
@@ -306,6 +309,7 @@ async def _route_via_globus_compute(
                 relay_url,
                 relay_secret,
                 relay_enc_key,
+                chat_template_kwargs=chat_template_kwargs,
             )
         except Exception as e:
             logger.warning(f"Relay streaming failed — falling back to batch mode: {e}")
@@ -317,6 +321,7 @@ async def _route_via_globus_compute(
             temperature=temperature,
             max_tokens=max_tokens,
             model=model,
+            chat_template_kwargs=chat_template_kwargs,
         )
 
         if "error" in result:
@@ -350,6 +355,7 @@ async def _route_via_globus_compute_streaming(
     relay_url,
     relay_secret,
     relay_enc_key,
+    chat_template_kwargs=None,
 ):
     # Pass the caller's Globus token when available — gives per-user SLURM attribution.
     globus_token = caller.globus_token if caller.auth_mode == "globus" else None
@@ -361,6 +367,7 @@ async def _route_via_globus_compute_streaming(
         model=model,
         relay_url=relay_url,
         globus_token=globus_token,
+        chat_template_kwargs=chat_template_kwargs,
     )
 
     if "error" in result:
