@@ -294,7 +294,7 @@ def remote_vllm_streaming(
                 continue
             delta = choices[0].get("delta", {})
             content = delta.get("content")
-            reasoning = delta.get("reasoning_content")
+            reasoning = delta.get("reasoning") or delta.get("reasoning_content")
             if content or reasoning:
                 msg: dict = {"type": "token"}
                 if content:
