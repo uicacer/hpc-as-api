@@ -59,19 +59,6 @@ Key design points:
 - **E2E encryption**: Optional AES-256-GCM encryption — relay sees only ciphertext
 - **Domain-agnostic**: Register any Python function; not limited to LLMs
 
-## Measured production performance
-
-Measured on 2026-06-15, Gemma 4 31B on Lakeshore ga-002 (2× A100 SXM4 80GB, TP2, BF16):
-
-| Metric | Value |
-|--------|-------|
-| Decode throughput (single user) | 25–38 tok/s |
-| TTFT via relay (single user, warm) | 0.5–1.2s |
-| Thinking mode TTFT (streaming) | ~0.5s first token |
-| Concurrent interactive (TTFT ≤1s) | 1–2 users |
-| Concurrent acceptable (TTFT ≤4s) | 3–4 users |
-| Rate limiting (per-key, 429 on exceed) | ✓ confirmed |
-
 ## Installation
 
 ```bash

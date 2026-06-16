@@ -554,41 +554,14 @@ Key metrics:
 
 ### Observed performance (Gemma 4 31B, 2× A100 SXM4, BF16, TP2)
 
-Measured 2026-06-15 via the full relay stack (Globus Compute + WebSocket relay).
-
 | Metric | Value |
 |--------|-------|
-| Decode throughput (single user) | **25–38 tok/s** |
-| TTFT via relay (warm, single user) | **0.5–1.2s** |
-| Thinking mode TTFT (first `reasoning_content` token) | **~0.5s** |
 | TTFT (first ever request, Triton JIT) | ~3–5s (one-time spike) |
 | Max concurrent 128K sessions (VRAM) | 6.47× |
 | `torch.compile` — first run | ~68s |
 | `torch.compile` — cached restarts | ~22s |
 
-**Relay overhead floor:** Globus Compute dispatch adds ~0.4s to every TTFT regardless of vLLM warm state. Raw vLLM TTFT on the node is ~70ms; the relay round-trip accounts for the rest.
-
 The Triton JIT spike only happens once — kernels are JIT-compiled on first use and cached for all subsequent requests.
-
-### Concurrent capacity
-
-| Concurrent users | Observed TTFT | Experience |
-|-----------------|---------------|------------|
-| 1–2 | 0.5–1.2s | Interactive — comfortable |
-| 3–4 | 1–4s | Acceptable for coursework |
-| 8 | 5–10s | Noticeable queuing |
-| 16+ | 10s+ | Slow — batching saturated |
-
-Bottleneck is Globus relay overhead + vLLM KV queue, not GPU throughput.
-
-### Capacity for Prof. Chris's class (300 students)
-
-At 25–38 tok/s single-user and ~10% duty cycle (students read/think between requests):
-
-- **Async homework / self-paced lab**: comfortable — natural stagger means ~30
-  truly concurrent requests at any time, which vLLM handles via continuous batching
-- **Synchronized "everyone run this now"**: queuing — last users may wait 2–10 min
-  during a 100+ request spike. Advise students to avoid simultaneous submission.
 
 ---
 

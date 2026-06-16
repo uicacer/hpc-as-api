@@ -195,11 +195,5 @@ curl -X POST https://relay.stream.acer.uic.edu:8001/v1/chat/completions \
 | `gemma4-31b` | google/gemma-4-31B-it | ga-002 (2× A100 80GB) | 128K | **Online** |
 | `qwen25-vl-72b` | Qwen/Qwen2.5-VL-72B-Instruct-AWQ | ghi2-002 (H100 NVL) | 64K | Offline (SLURM job not running) |
 
-**Performance expectations (gemma4-31b via relay):**
-- TTFT warm, single user: 0.5–1.2s
-- Decode throughput: 25–38 tok/s
-- Concurrent interactive (TTFT ≤1s): 1–2 users
-- Concurrent acceptable (TTFT ≤4s): 3–4 users
-
 For full details, troubleshooting, and memory budgets see
 [adding-a-new-model.md](adding-a-new-model.md).
