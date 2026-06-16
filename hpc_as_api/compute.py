@@ -105,7 +105,7 @@ _DEFAULT_TASK_TIMEOUT = int(os.getenv("GLOBUS_TASK_TIMEOUT", "240"))
 # reliably across both normal Python and PyInstaller-bundled environments.
 
 _REMOTE_FN_SOURCE = """\
-def remote_vllm_inference(vllm_url, model, messages, temperature, max_tokens, stream=False, chat_template_kwargs=None, tools=None, tool_choice=None):
+def remote_vllm_inference(vllm_url, model, messages, stream=False, params=None):
     \"\"\"
     Execute a vLLM inference request on the HPC cluster.
 
@@ -116,13 +116,10 @@ def remote_vllm_inference(vllm_url, model, messages, temperature, max_tokens, st
         vllm_url: HTTP URL of the vLLM server (e.g., "http://ghi2-002:8000")
         model: HuggingFace model name (e.g., "Qwen/Qwen2.5-VL-72B-Instruct-AWQ")
         messages: OpenAI-format message list
-        temperature: Sampling temperature
-        max_tokens: Maximum tokens to generate
         stream: Whether to request SSE streaming from vLLM (not used in batch mode)
-        chat_template_kwargs: Optional dict forwarded to vLLM as chat_template_kwargs
-            (e.g., {"enable_thinking": True} to activate Gemma 4 reasoning mode)
-        tools: OpenAI-format tool definitions list
-        tool_choice: Tool selection mode ("auto", "required", "none", or specific tool)
+        params: All other OpenAI request parameters (temperature, max_tokens,
+            tools, tool_choice, chat_template_kwargs, top_p, seed, stop, …),
+            forwarded to vLLM verbatim. The proxy fills in model/messages/stream.
 
     Returns:
         OpenAI-format response dict on success, or {"error": ..., "error_type": ...} on failure.
@@ -130,19 +127,10 @@ def remote_vllm_inference(vllm_url, model, messages, temperature, max_tokens, st
     try:
         import requests
         endpoint = f"{vllm_url}/v1/chat/completions"
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": stream,
-        }
-        if chat_template_kwargs:
-            payload["chat_template_kwargs"] = chat_template_kwargs
-        if tools:
-            payload["tools"] = tools
-        if tool_choice is not None:
-            payload["tool_choice"] = tool_choice
+        payload = dict(params or {})
+        payload["model"] = model
+        payload["messages"] = messages
+        payload["stream"] = stream
         try:
             response = requests.post(endpoint, json=payload, timeout=180)
             if response.status_code >= 400:
@@ -193,13 +181,12 @@ remote_vllm_inference = _ns["remote_vllm_inference"]
 #   Step 3: Forward each token through the relay to the waiting consumer
 #   Step 4: Send "done" + usage stats through relay → consumer reads and closes
 #
-# The Globus Compute return value ({ok: True, tokens_sent: N}) is just a receipt.
+# The Globus Compute return value ({ok: True, chunks_sent: N}) is just a receipt.
 # The consumer doesn't wait for it — it already got everything via the relay.
 
 _REMOTE_STREAMING_FN_SOURCE = """\
 def remote_vllm_streaming(
-    vllm_url, model, messages, temperature, max_tokens,
-    relay_url, channel_id, chat_template_kwargs=None, tools=None, tool_choice=None,
+    vllm_url, model, messages, relay_url, channel_id, params=None,
 ):
     \"\"\"
     Execute a streaming vLLM inference on the HPC cluster.
@@ -262,16 +249,15 @@ def remote_vllm_streaming(
             import json as _json
             ws.send(_json.dumps({"type": "auth", "secret": relay_secret}))
 
-        # Call vLLM with stream=True to get tokens as SSE events.
-        _payload = {"model": model, "messages": messages, "temperature": temperature,
-                    "max_tokens": max_tokens, "stream": True,
-                    "stream_options": {"include_usage": True}}
-        if chat_template_kwargs:
-            _payload["chat_template_kwargs"] = chat_template_kwargs
-        if tools:
-            _payload["tools"] = tools
-        if tool_choice is not None:
-            _payload["tool_choice"] = tool_choice
+        # Call vLLM with stream=True to get tokens as SSE events. All client
+        # params (temperature, max_tokens, tools, tool_choice, …) are forwarded
+        # verbatim; the proxy overrides model/messages/stream and forces
+        # include_usage so the final usage chunk carries cached-token stats.
+        _payload = dict(params or {})
+        _payload["model"] = model
+        _payload["messages"] = messages
+        _payload["stream"] = True
+        _payload["stream_options"] = {"include_usage": True}
         response = requests.post(
             f"{vllm_url}/v1/chat/completions",
             json=_payload,
@@ -285,12 +271,14 @@ def remote_vllm_streaming(
             _send(ws, {"type": "done"})
             return {"error": error_msg}
 
-        # Parse vLLM's SSE stream line by line.
+        # Parse vLLM's SSE stream line by line and relay each chunk VERBATIM.
         # Each line looks like: "data: {"choices":[{"delta":{"content":"Hello"}}]}"
-        # Blank lines are SSE event separators — skip them.
-        usage = {}
-        finish_reason = "stop"
-        tokens_sent = 0
+        # We forward the whole parsed chunk to the consumer untouched, so
+        # tool_calls, logprobs, multiple choices, reasoning_content, and the
+        # final include_usage chunk (choices=[], prompt_tokens_details.cached_tokens)
+        # all pass through with no per-field handling. Blank lines are SSE event
+        # separators — skip them.
+        chunks_sent = 0
         for line in response.iter_lines(decode_unicode=True):
             if not line or not line.startswith("data: "):
                 continue
@@ -301,32 +289,11 @@ def remote_vllm_streaming(
                 chunk = json.loads(payload)
             except json.JSONDecodeError:
                 continue
-            # Capture usage first: with stream_options.include_usage, vLLM emits
-            # a final chunk with choices=[] carrying the full usage block
-            # (including prompt_tokens_details.cached_tokens). Must run before the
-            # empty-choices short-circuit below, or usage is dropped.
-            if chunk.get("usage"):
-                usage = chunk["usage"]
-            choices = chunk.get("choices", [])
-            if not choices:
-                continue
-            choice = choices[0]
-            if choice.get("finish_reason"):
-                finish_reason = choice["finish_reason"]
-            delta = choice.get("delta", {})
-            content = delta.get("content")
-            reasoning = delta.get("reasoning") or delta.get("reasoning_content")
-            if content or reasoning:
-                msg: dict = {"type": "token"}
-                if content:
-                    msg["content"] = content
-                if reasoning:
-                    msg["reasoning_content"] = reasoning
-                _send(ws, msg)
-                tokens_sent += 1
+            _send(ws, {"type": "chunk", "data": chunk})
+            chunks_sent += 1
 
         # Signal stream completion. Consumer reads this and closes its connection.
-        _send(ws, {"type": "done", "finish_reason": finish_reason, "usage": usage})
+        _send(ws, {"type": "done"})
 
     except Exception as e:
         if ws:
@@ -345,7 +312,7 @@ def remote_vllm_streaming(
 
     # Globus Compute requires a return value. The consumer already received
     # everything via the relay — this is just a receipt.
-    return {"ok": True, "tokens_sent": tokens_sent}
+    return {"ok": True, "chunks_sent": chunks_sent}
 """
 
 _ns2: dict[str, Any] = {}
@@ -383,9 +350,8 @@ class GlobusComputeClient:
         if client.is_available():
             result = await client.submit_inference(
                 messages=[{"role": "user", "content": "Hello!"}],
-                temperature=0.7,
-                max_tokens=512,
                 model="qwen25-vl-72b",
+                params={"temperature": 0.7, "max_tokens": 512},
             )
 
     The `models` dict maps your model names to their configuration.
@@ -647,13 +613,9 @@ class GlobusComputeClient:
     async def submit_inference(
         self,
         messages: list[dict],
-        temperature: float = 0.7,
-        max_tokens: int | None = None,
         model: str = "",
+        params: dict | None = None,
         _retry: bool = False,
-        chat_template_kwargs: dict | None = None,
-        tools: list | None = None,
-        tool_choice: str | dict | None = None,
     ) -> dict[str, Any]:
         """
         Submit a batch inference job to the HPC cluster and wait for the full result.
@@ -669,10 +631,11 @@ class GlobusComputeClient:
 
         Args:
             messages: Conversation history in OpenAI format
-            temperature: Sampling temperature (0.0 = deterministic, 1.0 = creative)
-            max_tokens: Max tokens to generate. If None, uses model's
-                        context_reserve_output from the models registry.
             model: Model name as registered in the models dict
+            params: OpenAI request parameters forwarded to vLLM verbatim
+                (temperature, max_tokens, tools, tool_choice, chat_template_kwargs,
+                top_p, seed, …). When max_tokens is absent it defaults to the
+                model's context_reserve_output from the models registry.
             _retry: Internal flag — do not pass. Prevents infinite retry loops.
 
         Returns:
@@ -680,8 +643,10 @@ class GlobusComputeClient:
             {"error": str, "error_type": str, ...} on failure.
         """
         hf_name, vllm_url, default_max_tokens = self._resolve_model(model)
-        if max_tokens is None:
-            max_tokens = default_max_tokens
+        params = dict(params or {})
+        if params.get("max_tokens") is None:
+            params["max_tokens"] = default_max_tokens
+        max_tokens = params["max_tokens"]
 
         if not self.is_available():
             raise RuntimeError("No endpoint configured. Pass endpoint_id= to GlobusComputeClient.")
@@ -727,12 +692,8 @@ class GlobusComputeClient:
                 vllm_url,
                 hf_name,
                 messages,
-                temperature,
-                max_tokens,
                 False,  # stream=False — batch mode
-                chat_template_kwargs,
-                tools,
-                tool_choice,
+                params,
             )
             t_submit = time.perf_counter()
 
@@ -835,13 +796,9 @@ class GlobusComputeClient:
                 self._reset_executor()
                 return await self.submit_inference(
                     messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
                     model=model,
+                    params=params,
                     _retry=True,
-                    chat_template_kwargs=chat_template_kwargs,
-                    tools=tools,
-                    tool_choice=tool_choice,
                 )
 
             return {"error": str(e), "error_type": type(e).__name__}
@@ -853,14 +810,10 @@ class GlobusComputeClient:
     async def submit_streaming_inference(
         self,
         messages: list[dict],
-        temperature: float = 0.7,
-        max_tokens: int | None = None,
         model: str = "",
         relay_url: str = "",
         globus_token: str | None = None,
-        chat_template_kwargs: dict | None = None,
-        tools: list | None = None,
-        tool_choice: str | dict | None = None,
+        params: dict | None = None,
     ) -> dict[str, Any]:
         """
         Submit a streaming inference job. Returns a channel_id immediately.
@@ -875,18 +828,19 @@ class GlobusComputeClient:
             )
             channel_id = result["channel_id"]
             # Now connect: ws://relay.example.com/consume/{channel_id}
-            # Tokens arrive as: {"type": "token", "content": "..."}
-            # Stream ends with: {"type": "done", "usage": {...}}
+            # Chunks arrive as: {"type": "chunk", "data": <vLLM SSE chunk>}
+            # Stream ends with:  {"type": "done"}
 
         Args:
             messages: Conversation history in OpenAI format
-            temperature: Sampling temperature
-            max_tokens: Max tokens to generate
             model: Model name as registered in the models dict
             relay_url: WebSocket URL of the relay server
             globus_token: Optional caller Globus access token. When provided, the job is
                 submitted under the caller's own Globus identity for per-user SLURM
                 attribution. When None, the client's stored credentials are used.
+            params: OpenAI request parameters forwarded to vLLM verbatim
+                (temperature, max_tokens, tools, tool_choice, …). max_tokens
+                defaults to the model registry value when absent.
 
         Returns:
             {"channel_id": "uuid"} on success
@@ -895,8 +849,9 @@ class GlobusComputeClient:
         import uuid
 
         hf_name, vllm_url, default_max_tokens = self._resolve_model(model)
-        if max_tokens is None:
-            max_tokens = default_max_tokens
+        params = dict(params or {})
+        if params.get("max_tokens") is None:
+            params["max_tokens"] = default_max_tokens
 
         if not self.is_available():
             return {"error": "No endpoint configured", "error_type": "ConfigError"}
@@ -956,13 +911,9 @@ class GlobusComputeClient:
                 vllm_url,
                 hf_name,
                 messages,
-                temperature,
-                max_tokens,
                 relay_url,
                 channel_id,
-                chat_template_kwargs,
-                tools,
-                tool_choice,
+                params,
                 # No relay credentials are passed as task arguments. Both
                 # RELAY_SECRET and RELAY_ENCRYPTION_KEY are read from
                 # os.environ on the endpoint (set in worker_init). This way
@@ -1028,9 +979,8 @@ class GlobusComputeClient:
                 vllm_url,
                 hf_name,
                 [{"role": "user", "content": "hi"}],
-                0.0,  # temperature=0 (deterministic, no wasted randomness)
-                1,  # max_tokens=1 (just need to know if the model responds)
-                False,
+                False,  # stream=False
+                {"temperature": 0.0, "max_tokens": 1},  # deterministic 1-token probe
             )
             result = future.result(timeout=timeout)
 

@@ -246,12 +246,17 @@ def make_app(
         raw_model = body.get("model", "")
         model = raw_model.removeprefix("openai/")
         messages = validate_messages(body.get("messages", []))
-        temperature = body.get("temperature", 0.7)
-        stream = body.get("stream", False)
-        max_tokens = body.get("max_tokens")
-        chat_template_kwargs = body.get("chat_template_kwargs")
-        tools = body.get("tools")
-        tool_choice = body.get("tool_choice")
+        stream = bool(body.get("stream", False))
+
+        # Forward every other OpenAI parameter to vLLM untouched. The proxy only
+        # owns three fields: `model` (gateway alias → backend name), `messages`
+        # (validated and size-capped downstream), and `stream` (controls which
+        # routing path is taken). Everything else — temperature, max_tokens,
+        # tools, tool_choice, chat_template_kwargs, top_p, seed, stop, logprobs,
+        # response_format, … — passes through generically, so new sampling knobs
+        # need no code change here.
+        params = {k: v for k, v in body.items() if k not in _PROXY_OWNED_PARAMS}
+        params.setdefault("temperature", 0.7)
 
         logger.info(
             f"Chat request: caller={caller.log_safe_id()}, model={model}, messages={len(messages)}, stream={stream}"
@@ -261,8 +266,6 @@ def make_app(
             return await _route_via_globus_compute(
                 model,
                 messages,
-                temperature,
-                max_tokens,
                 stream,
                 caller,
                 _client,
@@ -270,15 +273,10 @@ def make_app(
                 _relay_secret,
                 _relay_enc_key,
                 _endpoint_id,
-                chat_template_kwargs=chat_template_kwargs,
-                tools=tools,
-                tool_choice=tool_choice,
+                params,
             )
         else:
-            return await _route_via_direct(
-                model, messages, temperature, max_tokens, stream, _direct_url,
-                tools=tools, tool_choice=tool_choice,
-            )
+            return await _route_via_direct(model, messages, stream, _direct_url, params)
 
     fastapi_app.include_router(_router)
     return fastapi_app
@@ -288,12 +286,14 @@ def make_app(
 # Internal routing helpers (pure functions — no module state)
 # ---------------------------------------------------------------------------
 
+# Request fields the proxy controls itself; everything else in the request body
+# is forwarded to vLLM verbatim via the `params` dict.
+_PROXY_OWNED_PARAMS = frozenset({"model", "messages", "stream"})
+
 
 async def _route_via_globus_compute(
     model,
     messages,
-    temperature,
-    max_tokens,
     stream,
     caller,
     client_ref,
@@ -301,9 +301,7 @@ async def _route_via_globus_compute(
     relay_secret,
     relay_enc_key,
     endpoint_id,
-    chat_template_kwargs=None,
-    tools=None,
-    tool_choice=None,
+    params,
 ):
     client = client_ref[0]
     if not client or not client.is_available():
@@ -314,16 +312,12 @@ async def _route_via_globus_compute(
             return await _route_via_globus_compute_streaming(
                 model,
                 messages,
-                temperature,
-                max_tokens,
                 caller,
                 client,
                 relay_url,
                 relay_secret,
                 relay_enc_key,
-                chat_template_kwargs=chat_template_kwargs,
-                tools=tools,
-                tool_choice=tool_choice,
+                params,
             )
         except Exception as e:
             logger.warning(f"Relay streaming failed — falling back to batch mode: {e}")
@@ -332,12 +326,8 @@ async def _route_via_globus_compute(
         logger.info(f"Submitting batch job to Globus endpoint: {endpoint_id}")
         result = await client.submit_inference(
             messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
             model=model,
-            chat_template_kwargs=chat_template_kwargs,
-            tools=tools,
-            tool_choice=tool_choice,
+            params=params,
         )
 
         if "error" in result:
@@ -364,30 +354,22 @@ async def _route_via_globus_compute(
 async def _route_via_globus_compute_streaming(
     model,
     messages,
-    temperature,
-    max_tokens,
     caller,
     client,
     relay_url,
     relay_secret,
     relay_enc_key,
-    chat_template_kwargs=None,
-    tools=None,
-    tool_choice=None,
+    params,
 ):
     # Pass the caller's Globus token when available — gives per-user SLURM attribution.
     globus_token = caller.globus_token if caller.auth_mode == "globus" else None
 
     result = await client.submit_streaming_inference(
         messages=messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
         model=model,
         relay_url=relay_url,
         globus_token=globus_token,
-        chat_template_kwargs=chat_template_kwargs,
-        tools=tools,
-        tool_choice=tool_choice,
+        params=params,
     )
 
     if "error" in result:
@@ -414,24 +396,14 @@ async def _route_via_globus_compute_streaming(
 
                     msg = json.loads(msg_str)
 
-                    if msg["type"] == "token":
-                        delta: dict = {}
-                        if "content" in msg:
-                            delta["content"] = msg["content"]
-                        if "reasoning_content" in msg:
-                            delta["reasoning_content"] = msg["reasoning_content"]
-                        chunk = {"choices": [{"index": 0, "delta": delta}]}
-                        yield f"data: {json.dumps(chunk)}\n\n"
+                    if msg["type"] == "chunk":
+                        # Relay forwards vLLM's SSE chunk verbatim. Re-emit it
+                        # untouched so tool_calls, logprobs, multi-choice, usage,
+                        # finish_reason — anything vLLM produces — reaches the
+                        # client without per-field reconstruction.
+                        yield f"data: {json.dumps(msg['data'])}\n\n"
 
                     elif msg["type"] == "done":
-                        finish_reason = msg.get("finish_reason", "stop")
-                        usage = msg.get("usage", {})
-                        final_chunk: dict = {
-                            "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
-                        }
-                        if usage:
-                            final_chunk["usage"] = usage
-                        yield f"data: {json.dumps(final_chunk)}\n\n"
                         yield "data: [DONE]\n\n"
                         break
 
@@ -447,21 +419,16 @@ async def _route_via_globus_compute_streaming(
     return StreamingResponse(sse_generator(), media_type="text/event-stream")
 
 
-async def _route_via_direct(model, messages, temperature, max_tokens, stream, direct_url, tools=None, tool_choice=None):
-    if max_tokens is None:
-        max_tokens = 2048
-
+async def _route_via_direct(model, messages, stream, direct_url, params):
+    # Forward all client params verbatim; the proxy only overrides the three
+    # fields it owns. max_tokens defaults to 2048 when the client omits it.
     payload = {
+        **params,
         "model": model,
         "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
         "stream": stream,
     }
-    if tools is not None:
-        payload["tools"] = tools
-    if tool_choice is not None:
-        payload["tool_choice"] = tool_choice
+    payload.setdefault("max_tokens", 2048)
     target_url = f"{direct_url}/v1/chat/completions"
     logger.info(f"Direct vLLM request: {target_url}")
 
