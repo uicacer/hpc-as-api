@@ -24,16 +24,19 @@ CONFIGURATION:
 All settings come from environment variables when using the standalone `app`.
 When using make_app(), pass them as arguments (env vars are the fallback).
 
-  GLOBUS_COMPUTE_ENDPOINT_ID   UUID of the HPC cluster's Globus endpoint
-  HPC_MODELS                   JSON dict mapping model names to their config
-  RELAY_URL                    WebSocket URL of the relay server
-  RELAY_SECRET                 Shared secret for relay authentication
-  RELAY_ENCRYPTION_KEY         AES-256 key (hex) for E2E relay encryption
-  HPC_PROXY_HOST               Host to bind to (default: 0.0.0.0)
-  HPC_PROXY_PORT               Port to listen on (default: 8001)
-  USE_GLOBUS_COMPUTE           "true"/"false" (default: true)
-  VLLM_SERVER_URL              Fallback vLLM URL when not using Globus
-  LOG_LEVEL                    Logging level (default: INFO)
+  GLOBUS_COMPUTE_ENDPOINT_ID         UUID of the HPC cluster's Globus endpoint
+  HPC_MODELS                         JSON dict mapping model names to their config
+  RELAY_URL                          WebSocket URL of the relay server
+  RELAY_SECRET                       Shared secret for relay authentication
+  RELAY_ENCRYPTION_KEY               AES-256 key (hex) for E2E relay encryption
+  HPC_PROXY_HOST                     Host to bind to (default: 0.0.0.0)
+  HPC_PROXY_PORT                     Port to listen on (default: 8001)
+  USE_GLOBUS_COMPUTE                 "true"/"false" (default: true)
+  VLLM_SERVER_URL                    Fallback vLLM URL when not using Globus
+  LOG_LEVEL                          Logging level (default: INFO)
+  PROXY_RATE_LIMIT_REQUESTS          Global max requests per caller per window (default: 10000)
+  PROXY_RATE_LIMIT_WINDOW            Window size in seconds (default: 60)
+  PROXY_RATE_LIMIT_REQUESTS_<NAME>   Per-key override; <NAME> matches PROXY_API_KEY_<NAME> suffix
 
 AUTHENTICATION:
 ---------------

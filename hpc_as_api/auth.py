@@ -83,38 +83,36 @@ class AuthConfig:
     Pass an ``AuthConfig`` instance to ``HPCApp`` or ``create_openai_app`` to
     configure auth entirely in Python, with no ``.env`` files needed.
 
-    Example — restrict to a specific institution::
+    **Rate limiting** is per-caller over a sliding window.  Two levels:
 
-        from hpc_as_api.auth import AuthConfig
+    * ``rate_limit_requests`` / ``PROXY_RATE_LIMIT_REQUESTS`` — global default
+      applied to every caller that doesn't have a per-key override.
+    * ``per_key_rate_limits`` / ``PROXY_RATE_LIMIT_REQUESTS_<NAME>`` — override
+      for a specific named key.  ``<NAME>`` is the suffix used in
+      ``PROXY_API_KEY_<NAME>``.  Example: if you defined
+      ``PROXY_API_KEY_AMPLIFY=sk-...``, set
+      ``PROXY_RATE_LIMIT_REQUESTS_AMPLIFY=200`` to give that key 200 req/min.
+
+    Example — per-key limits::
 
         auth = AuthConfig(
-            globus_client_id="your-client-id",
-            globus_client_secret="your-client-secret",
-            allowed_domains=["ornl.gov", "anl.gov"],
-            api_keys={"myservice": "sk-my-service-key"},
-            rate_limit_requests=10,
+            api_keys={"amplify": "sk-amplify-key", "demo": "sk-demo-key"},
+            rate_limit_requests=10000,   # default (catch runaway scripts)
             rate_limit_window=60,
+            per_key_rate_limits={"amplify": 500, "demo": 20},
         )
 
-    Example — open to any valid Globus identity::
-
-        auth = AuthConfig(
-            globus_client_id="your-client-id",
-            globus_client_secret="your-client-secret",
-            allowed_domains=[],          # empty = accept any Globus identity
-            api_keys={"ci": "sk-ci-key"},
-        )
-
-    +---------------------------+------------------------------+
-    | Argument                  | Env var fallback             |
-    +===========================+==============================+
-    | ``globus_client_id``      | ``GLOBUS_CLIENT_ID``         |
-    | ``globus_client_secret``  | ``GLOBUS_CLIENT_SECRET``     |
-    | ``allowed_domains``       | ``PROXY_ALLOWED_DOMAINS``    |
-    | ``api_keys``              | ``PROXY_API_KEY_<NAME>``     |
-    | ``rate_limit_requests``   | ``PROXY_RATE_LIMIT_REQUESTS``|
-    | ``rate_limit_window``     | ``PROXY_RATE_LIMIT_WINDOW``  |
-    +---------------------------+------------------------------+
+    +-----------------------------------+------------------------------------------+
+    | Argument                          | Env var fallback                         |
+    +===================================+==========================================+
+    | ``globus_client_id``              | ``GLOBUS_CLIENT_ID``                     |
+    | ``globus_client_secret``          | ``GLOBUS_CLIENT_SECRET``                 |
+    | ``allowed_domains``               | ``PROXY_ALLOWED_DOMAINS``                |
+    | ``api_keys``                      | ``PROXY_API_KEY_<NAME>``                 |
+    | ``rate_limit_requests``           | ``PROXY_RATE_LIMIT_REQUESTS``            |
+    | ``rate_limit_window``             | ``PROXY_RATE_LIMIT_WINDOW``              |
+    | ``per_key_rate_limits``           | ``PROXY_RATE_LIMIT_REQUESTS_<NAME>``     |
+    +-----------------------------------+------------------------------------------+
     """
 
     globus_client_id: str = field(default_factory=lambda: os.getenv("GLOBUS_CLIENT_ID", ""))
@@ -130,12 +128,16 @@ class AuthConfig:
     # for logging. Populated from PROXY_API_KEY_<NAME> env vars by default.
     api_keys: dict[str, str] = field(default_factory=lambda: _load_api_keys_from_env())
 
-    # Rate limiting is per-key over a sliding window.
-    # Default is intentionally high: shared classroom keys (300+ students) must
-    # not be throttled here — vLLM's internal queue handles backpressure.
-    # Lower this only to catch runaway scripts, not to shape normal load.
+    # Global default rate limit (requests per window). Intentionally high so
+    # shared classroom keys aren't throttled — vLLM handles backpressure internally.
+    # Lower only to catch runaway scripts, not to shape normal classroom load.
     rate_limit_requests: int = field(default_factory=lambda: int(os.getenv("PROXY_RATE_LIMIT_REQUESTS", "10000")))
     rate_limit_window: int = field(default_factory=lambda: int(os.getenv("PROXY_RATE_LIMIT_WINDOW", "60")))
+
+    # Per-key overrides: service_name → max requests per window.
+    # Populated from PROXY_RATE_LIMIT_REQUESTS_<NAME> env vars by default.
+    # Takes precedence over rate_limit_requests for that specific caller.
+    per_key_rate_limits: dict[str, int] = field(default_factory=lambda: _load_per_key_limits_from_env())
 
 
 def _load_api_keys_from_env() -> dict[str, str]:
@@ -148,6 +150,24 @@ def _load_api_keys_from_env() -> dict[str, str]:
     if legacy and legacy not in table:
         table[legacy] = "legacy"
     return table
+
+
+def _load_per_key_limits_from_env() -> dict[str, int]:
+    """Load per-key rate limits from PROXY_RATE_LIMIT_REQUESTS_<NAME> env vars.
+
+    Returns service_name → max_requests mapping.  Names are lowercased to match
+    the service names produced by _load_api_keys_from_env().
+    """
+    limits: dict[str, int] = {}
+    prefix = "PROXY_RATE_LIMIT_REQUESTS_"
+    for name, val in os.environ.items():
+        if name.startswith(prefix) and val:
+            service = name[len(prefix) :].lower()
+            try:
+                limits[service] = int(val)
+            except ValueError:
+                logger.warning(f"Ignoring invalid rate limit for {service}: {val!r}")
+    return limits
 
 
 # Module-level defaults (used by the legacy module-level `authenticate` function).
@@ -293,16 +313,15 @@ class Authenticator:
 
     def _check_rate_limit(self, caller_id: str) -> None:
         cfg = self.config
+        # Per-key override takes precedence over the global default.
+        limit = cfg.per_key_rate_limits.get(caller_id, cfg.rate_limit_requests)
         now = time.time()
         window_start = now - cfg.rate_limit_window
         self._rate_store[caller_id] = [t for t in self._rate_store[caller_id] if t > window_start]
-        if len(self._rate_store[caller_id]) >= cfg.rate_limit_requests:
+        if len(self._rate_store[caller_id]) >= limit:
             raise HTTPException(
                 status_code=429,
-                detail=(
-                    f"Rate limit exceeded: {cfg.rate_limit_requests} requests per "
-                    f"{cfg.rate_limit_window}s. Please slow down."
-                ),
+                detail=(f"Rate limit exceeded: {limit} requests per {cfg.rate_limit_window}s. Please slow down."),
             )
         self._rate_store[caller_id].append(now)
 

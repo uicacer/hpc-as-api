@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hpc-as-api"
-version = "0.3.9"
+version = "0.4.0"
 description = "Domain-agnostic HTTP gateway for any HPC function via Globus Compute + WebSocket relay"
 readme = "README.md"
 license = { file = "LICENSE" }

@@ -213,6 +213,9 @@ gateway = HPCApp(
 | `HPC_MODELS` | `{}` | JSON dict: model name → HPC config |
 | `USE_GLOBUS_COMPUTE` | `true` | `false` to route directly via vLLM URL |
 | `LAKESHORE_VLLM_ENDPOINT` | `http://localhost:8000` | Direct vLLM URL (non-Globus mode) |
+| `PROXY_RATE_LIMIT_REQUESTS` | `10000` | Global max requests per window (per-caller) |
+| `PROXY_RATE_LIMIT_WINDOW` | `60` | Window size in seconds |
+| `PROXY_RATE_LIMIT_REQUESTS_<NAME>` | — | Per-key override; `<NAME>` matches `PROXY_API_KEY_<NAME>` suffix |
 
 ### HPC_MODELS schema (LLM preset)
 
