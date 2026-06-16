@@ -1,5 +1,84 @@
 # Changelog
 
+## 0.5.0 (2026-06-16)
+
+### Transparent parameter & response passthrough
+
+The proxy no longer maintains per-field allowlists for OpenAI request
+parameters or streaming response fields. Previously, every new feature
+(`tools`, `tool_choice`, `chat_template_kwargs`, …) required editing 3–4
+signatures, and anything not explicitly enumerated — `top_p`, `seed`, `stop`,
+`frequency_penalty`, `presence_penalty`, `response_format`, `logprobs`, `n`,
+`logit_bias` — was silently dropped.
+
+**Request side — forward everything except what the proxy owns.** The gateway
+now captures all request-body parameters into a single `params` dict and
+forwards them to vLLM verbatim. The proxy overrides only the three fields it
+controls: `model` (gateway alias → backend name), `messages` (validated and
+size-capped), and `stream` (selects the routing path). Adding a new sampling
+knob now requires **zero code changes**.
+
+**Response side — relay vLLM's SSE chunks verbatim.** The Globus Compute
+streaming relay previously re-encoded each delta into a custom
+`{"type": "token", content, reasoning_content}` schema and reconstructed an
+OpenAI chunk on the consumer side. That normalization was an allowlist: it
+**dropped streaming `tool_calls` deltas entirely** (a forced streaming tool
+call arrived with `finish_reason=tool_calls` but no call name/arguments), and
+also dropped `logprobs` and multi-choice (`n>1`) output. The relay now forwards
+each vLLM chunk untouched as `{"type": "chunk", "data": <chunk>}`, and the
+consumer re-emits it as-is. Tool calls, reasoning, `logprobs`, multiple
+choices, and the `include_usage` final chunk (with
+`prompt_tokens_details.cached_tokens`) all pass through with no per-field code.
+This supersedes the empty-choices usage handling added in 0.4.1 — the usage
+chunk now passes through like any other.
+
+**Usage reporting is now opt-in on the relay path.** 0.4.1 force-injected
+`stream_options.include_usage=true` on every relay streaming request (it was the
+only way to surface usage under the old `done`-message protocol). With verbatim
+passthrough that injection is unnecessary and was removed: the client's
+`stream_options` is forwarded as-is, so usage/`cached_tokens` appears only when
+the caller opts in — matching the direct path and OpenAI/OpenRouter.
+
+**Streaming errors surface as OpenAI-shaped events with a correlation ref.**
+Because the relay path returns a `200` SSE response before the upstream call
+runs, vLLM/relay failures arrive mid-stream. They are now emitted as
+`data: {"error": {"message": "upstream inference error", "type":
+"upstream_error", "ref": "<nonce>"}}` followed by `[DONE]`. The full upstream
+message is logged server-side under the same `ref`, so an operator can match a
+client report to the log line without leaking internal detail to callers.
+Previously a relay error was only logged and the client received a misleading
+`finish_reason: "stop"` chunk.
+
+**Multi-turn tool calling unblocked in `validate_messages`.** The proxy's own
+message validator rejected `role: "tool"` (allowed only user/assistant/system)
+and rejected any message with `content: null`. Both shapes are required for
+tool calling: a tool-result turn uses `role: "tool"`, and an assistant turn
+that only issues tool calls has `content: null` with a `tool_calls` array. A
+multi-turn tool exchange therefore failed at the gateway with HTTP 400
+(`invalid role 'tool'`) **before ever reaching vLLM** — the `{"detail": …}`
+FastAPI error envelope, not vLLM's. `validate_messages` now accepts the `tool`
+and `developer` roles and allows `content: null` when `tool_calls` is present.
+(This corrects an earlier mis-diagnosis that attributed the 400 to a server-side
+chat-template; the model's tool-aware template was never the cause.)
+
+**Breaking (internal API):** `GlobusComputeClient.submit_inference()` and
+`submit_streaming_inference()` replace their `temperature` / `max_tokens` /
+`chat_template_kwargs` / `tools` / `tool_choice` keyword arguments with a
+single `params: dict`. The remote functions (`remote_vllm_inference`,
+`remote_vllm_streaming`) take `params` instead of enumerated arguments. Public
+top-level package API is unchanged.
+
+**Server-side requirement (unchanged from 0.4.1):** `cached_tokens` reporting
+still requires launching vLLM with `--enable-prompt-tokens-details`.
+
+**Tests** — relay tests now assert verbatim chunk passthrough, including a
+streaming tool-call-delta regression test, the `include_usage` chunk, and
+arbitrary sampling params (`top_p`, `seed`, `stop`) reaching vLLM; client
+`stream_options` passthrough (and confirmation that `include_usage` is no longer
+forced); a streaming upstream-error test asserting a generic ref'd error event
+that does not leak internal detail; plus `validate_messages` tests for the
+`tool` role and null-content tool-call turns. 53 unit tests pass.
+
 ## 0.4.1 (2026-06-16)
 
 ### Fix: tool calling, streaming finish_reason, and direct-mode streaming lifecycle

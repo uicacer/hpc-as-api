@@ -178,33 +178,8 @@ class _FakeVLLMResponse:
         yield from self._lines
 
 
-def test_streaming_relays_usage_with_cached_tokens(mock_globus_modules, monkeypatch):
-    """
-    vLLM emits its usage block (incl. prompt_tokens_details.cached_tokens) in a
-    final SSE chunk whose ``choices`` is empty. The relay producer must capture
-    that block and forward it in the ``done`` message — the empty-choices
-    short-circuit must not drop it.
-    """
-    from hpc_as_api.compute import remote_vllm_streaming
-
-    # No encryption → messages are sent as plaintext JSON we can parse.
-    monkeypatch.delenv("RELAY_ENCRYPTION_KEY", raising=False)
-    monkeypatch.delenv("RELAY_SECRET", raising=False)
-
-    sse_lines = [
-        'data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}',
-        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
-        # include_usage final chunk: empty choices, full usage block
-        'data: {"choices":[],"usage":{"prompt_tokens":600,"completion_tokens":16,'
-        '"total_tokens":616,"prompt_tokens_details":{"cached_tokens":576}}}',
-        "data: [DONE]",
-    ]
-
-    fake_ws = _FakeRelayWS()
-
-    # remote_vllm_streaming does `import requests` and
-    # `from websockets.sync.client import connect` internally — neither is a
-    # local dependency (they live on the HPC endpoint), so inject fakes.
+def _inject_remote_deps(monkeypatch, fake_ws, sse_lines):
+    """Inject fake `requests` and `websockets.sync.client` modules used by the remote fn."""
     import sys
     import types
 
@@ -222,21 +197,149 @@ def test_streaming_relays_usage_with_cached_tokens(mock_globus_modules, monkeypa
     monkeypatch.setitem(sys.modules, "websockets.sync", fake_ws_pkg)
     monkeypatch.setitem(sys.modules, "websockets.sync.client", fake_ws_client)
 
+
+def test_streaming_relays_every_chunk_verbatim(mock_globus_modules, monkeypatch):
+    """
+    The relay producer forwards each vLLM SSE chunk verbatim as
+    {"type": "chunk", "data": <chunk>}. This preserves tool_calls, reasoning,
+    and the empty-choices include_usage chunk (cached_tokens) with no per-field
+    handling — the chunk just passes through.
+    """
+    from hpc_as_api.compute import remote_vllm_streaming
+
+    # No encryption → messages are sent as plaintext JSON we can parse.
+    monkeypatch.delenv("RELAY_ENCRYPTION_KEY", raising=False)
+    monkeypatch.delenv("RELAY_SECRET", raising=False)
+
+    sse_lines = [
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1",'
+        '"function":{"name":"get_weather","arguments":"{}"}}]},"finish_reason":null}]}',
+        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+        # include_usage final chunk: empty choices, full usage block
+        'data: {"choices":[],"usage":{"prompt_tokens":600,"completion_tokens":16,'
+        '"total_tokens":616,"prompt_tokens_details":{"cached_tokens":576}}}',
+        "data: [DONE]",
+    ]
+
+    fake_ws = _FakeRelayWS()
+    _inject_remote_deps(monkeypatch, fake_ws, sse_lines)
+
     result = remote_vllm_streaming(
         vllm_url="http://localhost:8000",
         model="gemma4-31b",
         messages=[{"role": "user", "content": "hi"}],
-        temperature=0.0,
-        max_tokens=16,
         relay_url="ws://localhost:9999",
         channel_id="chan-1",
+        params={"temperature": 0.0, "max_tokens": 16},
     )
 
     assert result["ok"] is True
 
-    done = [json.loads(m) for m in fake_ws.sent]
-    done_msgs = [m for m in done if m.get("type") == "done"]
-    assert done_msgs, "no done message sent"
-    usage = done_msgs[-1].get("usage", {})
-    assert usage.get("prompt_tokens_details", {}).get("cached_tokens") == 576
-    assert done_msgs[-1].get("finish_reason") == "stop"
+    sent = [json.loads(m) for m in fake_ws.sent]
+    chunks = [m["data"] for m in sent if m.get("type") == "chunk"]
+    assert sent[-1] == {"type": "done"}, "stream must end with a bare done message"
+
+    # tool_calls deltas survived the relay
+    tool_calls = [
+        tc for ch in chunks for c in ch.get("choices", []) for tc in (c.get("delta", {}).get("tool_calls") or [])
+    ]
+    assert tool_calls and tool_calls[0]["function"]["name"] == "get_weather"
+
+    # include_usage chunk (cached_tokens) survived the relay
+    usages = [ch["usage"] for ch in chunks if ch.get("usage")]
+    assert usages and usages[-1]["prompt_tokens_details"]["cached_tokens"] == 576
+
+
+def test_streaming_forwards_arbitrary_params_to_vllm(mock_globus_modules, monkeypatch):
+    """params (top_p, seed, …) reach vLLM; the proxy only overrides model/messages/stream."""
+    from hpc_as_api.compute import remote_vllm_streaming
+
+    monkeypatch.delenv("RELAY_ENCRYPTION_KEY", raising=False)
+    monkeypatch.delenv("RELAY_SECRET", raising=False)
+
+    captured: dict = {}
+
+    import sys
+    import types
+
+    fake_requests = types.ModuleType("requests")
+
+    def fake_post(url, json=None, **k):
+        captured.update(json or {})
+        return _FakeVLLMResponse(["data: [DONE]"])
+
+    fake_requests.post = fake_post
+    monkeypatch.setitem(sys.modules, "requests", fake_requests)
+
+    fake_ws = _FakeRelayWS()
+    fake_ws_client = types.ModuleType("websockets.sync.client")
+    fake_ws_client.connect = lambda *a, **k: fake_ws
+    fake_ws_pkg = types.ModuleType("websockets.sync")
+    fake_ws_pkg.client = fake_ws_client
+    fake_ws_root = types.ModuleType("websockets")
+    fake_ws_root.sync = fake_ws_pkg
+    monkeypatch.setitem(sys.modules, "websockets", fake_ws_root)
+    monkeypatch.setitem(sys.modules, "websockets.sync", fake_ws_pkg)
+    monkeypatch.setitem(sys.modules, "websockets.sync.client", fake_ws_client)
+
+    remote_vllm_streaming(
+        vllm_url="http://localhost:8000",
+        model="gemma4-31b",
+        messages=[{"role": "user", "content": "hi"}],
+        relay_url="ws://localhost:9999",
+        channel_id="chan-1",
+        params={"top_p": 0.5, "seed": 7, "tools": [{"type": "function"}]},
+    )
+
+    assert captured["top_p"] == 0.5
+    assert captured["seed"] == 7
+    assert captured["tools"] == [{"type": "function"}]
+    # proxy-owned overrides
+    assert captured["model"] == "gemma4-31b"
+    assert captured["stream"] is True
+    # include_usage is NOT forced — the proxy doesn't inject stream_options.
+    assert "stream_options" not in captured
+
+
+def test_streaming_passes_through_client_stream_options(mock_globus_modules, monkeypatch):
+    """When the client opts into usage via stream_options, it is forwarded verbatim."""
+    from hpc_as_api.compute import remote_vllm_streaming
+
+    monkeypatch.delenv("RELAY_ENCRYPTION_KEY", raising=False)
+    monkeypatch.delenv("RELAY_SECRET", raising=False)
+
+    captured: dict = {}
+
+    import sys
+    import types
+
+    fake_requests = types.ModuleType("requests")
+
+    def fake_post(url, json=None, **k):
+        captured.update(json or {})
+        return _FakeVLLMResponse(["data: [DONE]"])
+
+    fake_requests.post = fake_post
+    monkeypatch.setitem(sys.modules, "requests", fake_requests)
+
+    fake_ws = _FakeRelayWS()
+    fake_ws_client = types.ModuleType("websockets.sync.client")
+    fake_ws_client.connect = lambda *a, **k: fake_ws
+    fake_ws_pkg = types.ModuleType("websockets.sync")
+    fake_ws_pkg.client = fake_ws_client
+    fake_ws_root = types.ModuleType("websockets")
+    fake_ws_root.sync = fake_ws_pkg
+    monkeypatch.setitem(sys.modules, "websockets", fake_ws_root)
+    monkeypatch.setitem(sys.modules, "websockets.sync", fake_ws_pkg)
+    monkeypatch.setitem(sys.modules, "websockets.sync.client", fake_ws_client)
+
+    remote_vllm_streaming(
+        vllm_url="http://localhost:8000",
+        model="gemma4-31b",
+        messages=[{"role": "user", "content": "hi"}],
+        relay_url="ws://localhost:9999",
+        channel_id="chan-1",
+        params={"stream_options": {"include_usage": True}},
+    )
+
+    assert captured["stream_options"] == {"include_usage": True}
