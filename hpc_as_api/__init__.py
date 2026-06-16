@@ -64,7 +64,12 @@ try:
 except ImportError:
     _GLOBUS_AVAILABLE = False
 
-__version__ = "0.5.2"
+try:
+    from importlib.metadata import version as _pkg_version
+
+    __version__ = _pkg_version("hpc-as-api")
+except Exception:
+    __version__ = "unknown"
 __all__ = [
     "AuthConfig",
     "Authenticator",
