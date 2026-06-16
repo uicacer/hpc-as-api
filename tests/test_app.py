@@ -721,3 +721,27 @@ def test_streaming_relays_usage_chunk(mock_globus):
     usages = [o["usage"] for o in objs if o.get("usage")]
     assert usages, "usage chunk was dropped"
     assert usages[-1]["prompt_tokens_details"]["cached_tokens"] == 576
+
+
+def test_streaming_upstream_error_emits_generic_event_with_ref(mock_globus):
+    """An upstream relay error must become a generic OpenAI error event with a correlation ref."""
+    import asyncio
+    import json as json_mod
+
+    secret_detail = "vLLM HTTP 500: torch CUDA OOM at /opt/secret/path/model.safetensors"
+    relay_messages = [
+        json_mod.dumps({"type": "error", "message": secret_detail}),
+        json_mod.dumps({"type": "done"}),
+    ]
+
+    sse_text = asyncio.get_event_loop().run_until_complete(_collect_sse(relay_messages))
+    objs = _sse_data_objects(sse_text)
+
+    errors = [o["error"] for o in objs if o.get("error")]
+    assert errors, "no error event emitted"
+    err = errors[0]
+    assert err["type"] == "upstream_error"
+    assert err["message"] == "upstream inference error"  # generic, not the raw upstream text
+    assert err["ref"] and len(err["ref"]) >= 8  # correlation nonce present
+    assert secret_detail not in sse_text  # internal detail must NOT leak to the client
+    assert sse_text.rstrip().endswith("data: [DONE]")

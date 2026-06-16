@@ -49,6 +49,7 @@ import asyncio
 import json
 import logging
 import os
+import uuid
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
@@ -408,12 +409,24 @@ async def _route_via_globus_compute_streaming(
                         break
 
                     elif msg["type"] == "error":
-                        logger.error(f"Relay error on channel {channel_id[:8]}: {msg.get('message')}")
+                        # Surface a generic OpenAI-shaped error event carrying a
+                        # correlation ref. The full upstream message is logged
+                        # server-side under the same ref so operators can match a
+                        # client report to the log line without leaking internals.
+                        ref = uuid.uuid4().hex[:12]
+                        logger.error(
+                            f"Relay upstream error on channel {channel_id[:8]} [ref={ref}]: {msg.get('message')}"
+                        )
+                        err = {"error": {"message": "upstream inference error", "type": "upstream_error", "ref": ref}}
+                        yield f"data: {json.dumps(err)}\n\n"
+                        yield "data: [DONE]\n\n"
+                        break
 
         except Exception as e:
-            logger.error(f"Relay connection failed: {e}", exc_info=True)
-            error_chunk = {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
-            yield f"data: {json.dumps(error_chunk)}\n\n"
+            ref = uuid.uuid4().hex[:12]
+            logger.error(f"Relay connection failed on channel {channel_id[:8]} [ref={ref}]: {e}", exc_info=True)
+            err = {"error": {"message": "gateway streaming error", "type": "gateway_error", "ref": ref}}
+            yield f"data: {json.dumps(err)}\n\n"
             yield "data: [DONE]\n\n"
 
     return StreamingResponse(sse_generator(), media_type="text/event-stream")

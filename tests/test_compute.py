@@ -297,4 +297,49 @@ def test_streaming_forwards_arbitrary_params_to_vllm(mock_globus_modules, monkey
     # proxy-owned overrides
     assert captured["model"] == "gemma4-31b"
     assert captured["stream"] is True
+    # include_usage is NOT forced — the proxy doesn't inject stream_options.
+    assert "stream_options" not in captured
+
+
+def test_streaming_passes_through_client_stream_options(mock_globus_modules, monkeypatch):
+    """When the client opts into usage via stream_options, it is forwarded verbatim."""
+    from hpc_as_api.compute import remote_vllm_streaming
+
+    monkeypatch.delenv("RELAY_ENCRYPTION_KEY", raising=False)
+    monkeypatch.delenv("RELAY_SECRET", raising=False)
+
+    captured: dict = {}
+
+    import sys
+    import types
+
+    fake_requests = types.ModuleType("requests")
+
+    def fake_post(url, json=None, **k):
+        captured.update(json or {})
+        return _FakeVLLMResponse(["data: [DONE]"])
+
+    fake_requests.post = fake_post
+    monkeypatch.setitem(sys.modules, "requests", fake_requests)
+
+    fake_ws = _FakeRelayWS()
+    fake_ws_client = types.ModuleType("websockets.sync.client")
+    fake_ws_client.connect = lambda *a, **k: fake_ws
+    fake_ws_pkg = types.ModuleType("websockets.sync")
+    fake_ws_pkg.client = fake_ws_client
+    fake_ws_root = types.ModuleType("websockets")
+    fake_ws_root.sync = fake_ws_pkg
+    monkeypatch.setitem(sys.modules, "websockets", fake_ws_root)
+    monkeypatch.setitem(sys.modules, "websockets.sync", fake_ws_pkg)
+    monkeypatch.setitem(sys.modules, "websockets.sync.client", fake_ws_client)
+
+    remote_vllm_streaming(
+        vllm_url="http://localhost:8000",
+        model="gemma4-31b",
+        messages=[{"role": "user", "content": "hi"}],
+        relay_url="ws://localhost:9999",
+        channel_id="chan-1",
+        params={"stream_options": {"include_usage": True}},
+    )
+
     assert captured["stream_options"] == {"include_usage": True}

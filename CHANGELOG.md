@@ -32,6 +32,23 @@ choices, and the `include_usage` final chunk (with
 This supersedes the empty-choices usage handling added in 0.4.1 — the usage
 chunk now passes through like any other.
 
+**Usage reporting is now opt-in on the relay path.** 0.4.1 force-injected
+`stream_options.include_usage=true` on every relay streaming request (it was the
+only way to surface usage under the old `done`-message protocol). With verbatim
+passthrough that injection is unnecessary and was removed: the client's
+`stream_options` is forwarded as-is, so usage/`cached_tokens` appears only when
+the caller opts in — matching the direct path and OpenAI/OpenRouter.
+
+**Streaming errors surface as OpenAI-shaped events with a correlation ref.**
+Because the relay path returns a `200` SSE response before the upstream call
+runs, vLLM/relay failures arrive mid-stream. They are now emitted as
+`data: {"error": {"message": "upstream inference error", "type":
+"upstream_error", "ref": "<nonce>"}}` followed by `[DONE]`. The full upstream
+message is logged server-side under the same `ref`, so an operator can match a
+client report to the log line without leaking internal detail to callers.
+Previously a relay error was only logged and the client received a misleading
+`finish_reason: "stop"` chunk.
+
 **Multi-turn tool calling unblocked in `validate_messages`.** The proxy's own
 message validator rejected `role: "tool"` (allowed only user/assistant/system)
 and rejected any message with `content: null`. Both shapes are required for
@@ -56,9 +73,11 @@ still requires launching vLLM with `--enable-prompt-tokens-details`.
 
 **Tests** — relay tests now assert verbatim chunk passthrough, including a
 streaming tool-call-delta regression test, the `include_usage` chunk, and
-arbitrary sampling params (`top_p`, `seed`, `stop`) reaching vLLM; plus
-`validate_messages` tests for the `tool` role and null-content tool-call turns.
-51 unit tests pass.
+arbitrary sampling params (`top_p`, `seed`, `stop`) reaching vLLM; client
+`stream_options` passthrough (and confirmation that `include_usage` is no longer
+forced); a streaming upstream-error test asserting a generic ref'd error event
+that does not leak internal detail; plus `validate_messages` tests for the
+`tool` role and null-content tool-call turns. 53 unit tests pass.
 
 ## 0.4.1 (2026-06-16)
 

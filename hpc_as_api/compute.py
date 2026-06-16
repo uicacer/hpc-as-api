@@ -250,14 +250,15 @@ def remote_vllm_streaming(
             ws.send(_json.dumps({"type": "auth", "secret": relay_secret}))
 
         # Call vLLM with stream=True to get tokens as SSE events. All client
-        # params (temperature, max_tokens, tools, tool_choice, …) are forwarded
-        # verbatim; the proxy overrides model/messages/stream and forces
-        # include_usage so the final usage chunk carries cached-token stats.
+        # params (temperature, max_tokens, tools, tool_choice, stream_options, …)
+        # are forwarded verbatim; the proxy overrides only model/messages/stream.
+        # Usage (incl. prompt_tokens_details.cached_tokens) is reported only when
+        # the client opts in via stream_options.include_usage — matching the
+        # direct path and OpenAI/OpenRouter semantics.
         _payload = dict(params or {})
         _payload["model"] = model
         _payload["messages"] = messages
         _payload["stream"] = True
-        _payload["stream_options"] = {"include_usage": True}
         response = requests.post(
             f"{vllm_url}/v1/chat/completions",
             json=_payload,
@@ -274,10 +275,9 @@ def remote_vllm_streaming(
         # Parse vLLM's SSE stream line by line and relay each chunk VERBATIM.
         # Each line looks like: "data: {"choices":[{"delta":{"content":"Hello"}}]}"
         # We forward the whole parsed chunk to the consumer untouched, so
-        # tool_calls, logprobs, multiple choices, reasoning_content, and the
-        # final include_usage chunk (choices=[], prompt_tokens_details.cached_tokens)
-        # all pass through with no per-field handling. Blank lines are SSE event
-        # separators — skip them.
+        # tool_calls, logprobs, multiple choices, reasoning_content, and (when the
+        # client requested it) the final include_usage chunk all pass through with
+        # no per-field handling. Blank lines are SSE event separators — skip them.
         chunks_sent = 0
         for line in response.iter_lines(decode_unicode=True):
             if not line or not line.startswith("data: "):
