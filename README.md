@@ -1,6 +1,7 @@
 # hpc-as-api
 
 [![PyPI](https://img.shields.io/pypi/v/hpc-as-api)](https://pypi.org/project/hpc-as-api/)
+[![Tests](https://github.com/uicacer/hpc-as-api/actions/workflows/tests.yml/badge.svg)](https://github.com/uicacer/hpc-as-api/actions)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](https://github.com/uicacer/hpc-as-api/blob/main/LICENSE)
 
 **HTTP gateway for any HPC function — real-time streaming from any HPC workload.**
