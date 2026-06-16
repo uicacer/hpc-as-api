@@ -263,6 +263,8 @@ PROXY_RATE_LIMIT_REQUESTS=10000      # class key: 10k req/min
 PROXY_RATE_LIMIT_REQUESTS_DEMO=20    # demo key: 20 req/min
 ```
 
+> **Scaling to per-student keys (future work):** For classroom deployments with hundreds of students, the planned approach is a `PROXY_KEYS_FILE` pointing at a JSON file of `{"student_name": "sk-..."}` pairs loaded and merged with env-var keys at startup. A bulk generation script produces all keys at once; students receive theirs via Canvas. No OAuth, no login, no extra infrastructure. Not yet implemented.
+
 ## Development
 
 ```bash

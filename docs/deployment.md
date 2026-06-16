@@ -266,6 +266,16 @@ curl -X POST https://your-domain.edu:8001/v1/chat/completions \
 | `HPC_PROXY_HOST` | `0.0.0.0` | Host to bind to (use `127.0.0.1` behind a reverse proxy) |
 | `HPC_PROXY_PORT` | `8001` | Port to listen on |
 
+### Scaling to per-student keys (future work)
+
+The current `PROXY_API_KEY_<NAME>` pattern works well for a handful of service accounts but doesn't scale to 300 students without manual proxy-env edits. The planned approach is a `PROXY_KEYS_FILE` pointing to a JSON file of `{"student_name": "sk-..."}` pairs that the proxy loads and merges with env-var keys at startup:
+
+```json
+{"alice_smith": "sk-class-a1b2c3...", "bob_jones": "sk-class-d4e5f6..."}
+```
+
+A bulk generation script would produce all keys at once; distribution happens via Canvas. Adding/revoking a student = edit the JSON file + hit `/reload-keys` (no restart needed). No OAuth, no login, no extra infrastructure — students use their key exactly like any API key. This is not yet implemented.
+
 ### Rate limiting examples
 
 **Shared classroom key, tight demo key:**
