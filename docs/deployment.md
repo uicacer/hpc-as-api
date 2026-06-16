@@ -308,6 +308,19 @@ Or pin to a specific version:
 python3.12 -m pip install "hpc-as-api[globus]==0.4.0"
 ```
 
+**If a local `hpc_as_api/` directory exists in the home directory**, pip's installed package will be shadowed by it — `python3.12 -c "import hpc_as_api; print(hpc_as_api.__version__)"` will show the old version even after upgrading. Fix by syncing the source tree into the local directory:
+
+```bash
+# From your dev machine:
+rsync -av --delete /path/to/hpc-as-api/hpc_as_api/ stream-relay:/home/ubuntu/hpc_as_api/
+ssh stream-relay "sudo systemctl restart stream-proxy"
+```
+
+After the rsync, verify the version matches what you expect:
+```bash
+ssh stream-relay "python3.12 -c 'import hpc_as_api; print(hpc_as_api.__version__)'"
+```
+
 ---
 
 ## Threat model

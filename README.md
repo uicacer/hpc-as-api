@@ -2,7 +2,6 @@
 
 [![PyPI](https://img.shields.io/pypi/v/hpc-as-api)](https://pypi.org/project/hpc-as-api/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](https://github.com/uicacer/hpc-as-api/blob/main/LICENSE)
-[![Tests](https://github.com/uicacer/hpc-as-api/actions/workflows/tests.yml/badge.svg)](https://github.com/uicacer/hpc-as-api/actions)
 
 **HTTP gateway for any HPC function — real-time streaming from any HPC workload.**
 
@@ -38,8 +37,6 @@ HPC clusters run workloads impossible on commodity hardware — 72B+ parameter m
 
 ## Architecture
 
-![Relay architecture: the HPC compute node and gateway consumer both connect outbound to the WebSocket relay, traversing firewalls without VPN or inbound ports.](Relay_Architecture.png)
-
 ```
 Your Application / HTTP Client
         │  POST /your-endpoint  (any input schema)
@@ -61,6 +58,19 @@ Key design points:
 - **Real-time streaming**: Any incremental output arrives as SSE via [streamrelay](https://github.com/uicacer/streamrelay)
 - **E2E encryption**: Optional AES-256-GCM encryption — relay sees only ciphertext
 - **Domain-agnostic**: Register any Python function; not limited to LLMs
+
+## Measured production performance
+
+Measured on 2026-06-15, Gemma 4 31B on Lakeshore ga-002 (2× A100 SXM4 80GB, TP2, BF16):
+
+| Metric | Value |
+|--------|-------|
+| Decode throughput (single user) | 25–38 tok/s |
+| TTFT via relay (single user, warm) | 0.5–1.2s |
+| Thinking mode TTFT (streaming) | ~0.5s first token |
+| Concurrent interactive (TTFT ≤1s) | 1–2 users |
+| Concurrent acceptable (TTFT ≤4s) | 3–4 users |
+| Rate limiting (per-key, 429 on exceed) | ✓ confirmed |
 
 ## Installation
 
@@ -106,8 +116,9 @@ uvicorn mymodule:app --host 0.0.0.0 --port 8001
 
 Clients stream the output in real time:
 ```bash
-curl -X POST http://localhost:8001/run \
-  -H "Authorization: Bearer <token>" \
+export API_KEY="sk-your-key"
+curl -N -X POST http://localhost:8001/run \
+  -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"steps": 500, "param": 0.7}'
 ```
@@ -123,10 +134,10 @@ from hpc_as_api.presets.openai import create_openai_app
 app = create_openai_app(
     endpoint_id="8d978809-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
     models={
-        "qwen25-vl-72b": {
-            "hf_name": "Qwen/Qwen2.5-VL-72B-Instruct-AWQ",
-            "url": "http://ghi2-002:8000",
-            "context_reserve_output": 4096,
+        "gemma4-31b": {
+            "hf_name": "gemma4-31b",
+            "url": "http://127.0.0.1:8001",
+            "context_reserve_output": 8192,
         }
     },
     relay_url="wss://relay.example.com",
@@ -138,40 +149,42 @@ Or run as a service from environment variables:
 
 ```bash
 export GLOBUS_COMPUTE_ENDPOINT_ID="your-endpoint-uuid"
-export HPC_MODELS='{"qwen25-vl-72b": {"hf_name": "Qwen/Qwen2.5-VL-72B-Instruct-AWQ", "url": "http://ghi2-002:8000", "context_reserve_output": 4096}}'
+export HPC_MODELS='{"gemma4-31b": {"hf_name": "gemma4-31b", "url": "http://127.0.0.1:8001", "context_reserve_output": 8192}}'
 export RELAY_URL="wss://relay.example.com"
 export RELAY_SECRET="your-relay-secret"
+export PROXY_API_KEY_MYSERVICE="sk-your-key"
 
-uvicorn hpc_as_api.app:app --host 0.0.0.0 --port 8001
+uvicorn hpc_as_api.app:app --host 127.0.0.1 --port 8002
 ```
 
 Any OpenAI client works without modification:
 ```python
-import openai
-client = openai.OpenAI(base_url="http://localhost:8001/v1", api_key="sk-xxxx")
-response = client.chat.completions.create(model="qwen25-vl-72b", messages=[...], stream=True)
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8002/v1",
+    api_key=os.environ["PROXY_API_KEY_MYSERVICE"],
+)
+response = client.chat.completions.create(
+    model="gemma4-31b",
+    messages=[{"role": "user", "content": "Hello!"}],
+    stream=True,
+)
+for chunk in response:
+    print(chunk.choices[0].delta.content or "", end="", flush=True)
 ```
 
 ## Multiple independent gateways
 
-`make_app()` returns a fresh, independent instance each time — safe to use
-multiple gateways with different configurations in the same process:
+`create_openai_app()` returns a fresh, independent instance each time — safe to
+run multiple gateways with different configurations in the same process:
 
 ```python
-from hpc_as_api.app import make_app
+from hpc_as_api.presets.openai import create_openai_app
 
-sim_app = make_app(endpoint_id="endpoint-a", relay_url="wss://relay.example.com", models={...})
-llm_app = make_app(endpoint_id="endpoint-b", relay_url="wss://relay.example.com", models={...})
-```
-
-## Embed in an existing FastAPI app
-
-```python
-from fastapi import FastAPI
-from hpc_as_api.app import router
-
-app = FastAPI()
-app.include_router(router, prefix="/hpc")
+llm_a = create_openai_app(endpoint_id="endpoint-a", models={...}, relay_url="wss://relay.example.com")
+llm_b = create_openai_app(endpoint_id="endpoint-b", models={...}, relay_url="wss://relay.example.com")
 ```
 
 ## Programmatic auth configuration
@@ -188,7 +201,7 @@ gateway = HPCApp(
         globus_client_secret="your-client-secret",
         allowed_domains=["university.edu"],
         api_keys={"my-service": "sk-xxxx"},
-        rate_limit_requests=20,
+        rate_limit_requests=10000,
         rate_limit_window=60,
     ),
 )
@@ -196,7 +209,7 @@ gateway = HPCApp(
 
 ## Configuration reference
 
-### HPCApp / make_app()
+### HPCApp / create_openai_app()
 
 | Argument | Env var fallback | Description |
 |---|---|---|
@@ -206,37 +219,49 @@ gateway = HPCApp(
 | `relay_encryption_key` | `RELAY_ENCRYPTION_KEY` | AES-256 hex key for E2E encryption |
 | `auth` | — | `AuthConfig` or `Authenticator` instance |
 
-### OpenAI preset additional settings
+### OpenAI preset environment variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `HPC_MODELS` | `{}` | JSON dict: model name → HPC config |
-| `USE_GLOBUS_COMPUTE` | `true` | `false` to route directly via vLLM URL |
-| `LAKESHORE_VLLM_ENDPOINT` | `http://localhost:8000` | Direct vLLM URL (non-Globus mode) |
-| `PROXY_RATE_LIMIT_REQUESTS` | `10000` | Global max requests per window (per-caller) |
+| `HPC_MODELS` | `{}` | JSON dict: model alias → `{"hf_name", "url", "context_reserve_output"}` |
+| `PROXY_API_KEY_<NAME>` | — | API key for service `<NAME>` — any number of keys, any suffix |
+| `PROXY_RATE_LIMIT_REQUESTS` | `10000` | Global max requests per window (per-caller sliding window) |
 | `PROXY_RATE_LIMIT_WINDOW` | `60` | Window size in seconds |
-| `PROXY_RATE_LIMIT_REQUESTS_<NAME>` | — | Per-key override; `<NAME>` matches `PROXY_API_KEY_<NAME>` suffix |
+| `PROXY_RATE_LIMIT_REQUESTS_<NAME>` | — | Per-key override; `<NAME>` must match the suffix in `PROXY_API_KEY_<NAME>` (lowercased) |
+| `USE_GLOBUS_COMPUTE` | `true` | `false` to route directly to a vLLM URL without Globus |
 
-### HPC_MODELS schema (LLM preset)
+### HPC_MODELS schema
 
 ```json
 {
-  "my-model-name": {
-    "hf_name": "org/ModelName",
-    "url": "http://compute-node:8000",
-    "context_reserve_output": 4096
+  "my-model-alias": {
+    "hf_name": "my-model-alias",
+    "url": "http://127.0.0.1:8001",
+    "context_reserve_output": 8192
   }
 }
 ```
 
+`hf_name` must exactly match `--served-model-name` in the vLLM SLURM script.
+`url` is where vLLM is reachable from the Globus Compute worker (usually `http://127.0.0.1:PORT` when workers are co-located).
+
 ## Authentication
 
-Two auth modes, configurable via `AuthConfig` or environment variables:
+Two auth modes coexist automatically, configured via `AuthConfig` or environment variables:
 
-- **Globus token**: Bearer token from Globus Auth, validated via introspection; email domain filtering supported
-- **API key**: Static key from `HPC_API_KEYS` env var (comma-separated `name:key` pairs)
+**Mode A — Globus token** (for institutional users)
+The caller presents a Globus access token validated via introspection. The job runs under the caller's Globus identity. Set `GLOBUS_CLIENT_ID`, `GLOBUS_CLIENT_SECRET`, and optionally `PROXY_ALLOWED_DOMAINS`.
 
-Both modes coexist on the same endpoint.
+**Mode B — API key** (for service-to-service callers)
+The caller presents a static key. Set one or more `PROXY_API_KEY_<NAME>=<value>` env vars. The `<NAME>` suffix (lowercased) identifies the caller in logs and rate-limit overrides.
+
+```bash
+# Example: two keys, different rate limits
+PROXY_API_KEY_CLASS=sk-class-key
+PROXY_API_KEY_DEMO=sk-demo-key
+PROXY_RATE_LIMIT_REQUESTS=10000      # class key: 10k req/min
+PROXY_RATE_LIMIT_REQUESTS_DEMO=20    # demo key: 20 req/min
+```
 
 ## Development
 
@@ -244,13 +269,23 @@ Both modes coexist on the same endpoint.
 git clone https://github.com/uicacer/hpc-as-api
 cd hpc-as-api
 uv sync --extra dev
+
+# Install pre-commit hooks (ruff, mypy, gitleaks, hygiene checks)
+pre-commit install
+
 uv run pytest
 ```
+
+## Deployment
+
+See [docs/deployment.md](docs/deployment.md) for the full sysadmin guide (systemd, Caddy TLS, Globus endpoint, secrets management).
+
+See [docs/tutorial.ipynb](docs/tutorial.ipynb) for a zero-to-hero walkthrough from relay primitives through production deployment.
 
 ## Related
 
 - [streamrelay](https://github.com/uicacer/streamrelay) — WebSocket relay for real-time output streaming from Globus Compute
-- [STREAM](https://github.com/uicacer/stream) — Full tiered LLM routing system that uses hpc-as-api
+- [STREAM](https://github.com/uicacer/STREAM) — Full tiered LLM routing system that uses hpc-as-api
 
 ## License
 
