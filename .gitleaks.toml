@@ -33,3 +33,7 @@ regexes = [
     # Hex placeholders (e.g. 000...000 or aaa...aaa)
     '''[0-9a-f]{40,}''',
 ]
+
+[[allowlists]]
+description = "Rotated key in benchmarks/TUNING.md (commit bffd755) — already revoked, benchmarks folder removed"
+commits = ["bffd7554550cbed3c94dc582e77e72b8868d2435"]
