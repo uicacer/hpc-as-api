@@ -137,6 +137,55 @@ def test_create_openai_app_independence(mock_globus):
 
 
 # ---------------------------------------------------------------------------
+# Model validation — unknown model → 404 (Globus path only)
+# ---------------------------------------------------------------------------
+
+
+def _globus_client(mock_globus, models=None):
+    """Build a TestClient wired for Globus (use_globus_compute=True) with mocked submit."""
+
+    from hpc_as_api.app import make_app
+    from hpc_as_api.auth import AuthConfig, Authenticator
+
+    auth = Authenticator(
+        AuthConfig(
+            globus_client_id="",
+            globus_client_secret="",
+            allowed_domains=[],
+            api_keys={"testkey": "test-service"},
+        )
+    )
+    _models = models or {"known-model": {"hf_name": "org/Known", "url": "http://fake:8000"}}
+    app = make_app(use_globus_compute=True, models=_models, auth=auth, endpoint_id="fake-endpoint")
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def test_unknown_model_returns_404(mock_globus):
+    """Requesting a model not in HPC_MODELS on the Globus path must return 404."""
+    client = _globus_client(mock_globus)
+    resp = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer testkey"},
+        json={"model": "nonexistent-xyz", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert resp.status_code == 404
+    assert "nonexistent-xyz" in resp.json().get("detail", "")
+
+
+def test_known_model_not_404(mock_globus):
+    """A registered model must NOT be rejected at the model-validation gate."""
+
+    client = _globus_client(mock_globus, models={"known-model": {"hf_name": "org/M", "url": "http://fake:8000"}})
+    # The request will fail later (no real relay/Globus), but must not 404
+    resp = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer testkey"},
+        json={"model": "known-model", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert resp.status_code != 404
+
+
+# ---------------------------------------------------------------------------
 # /v1/chat/completions — direct mode
 # ---------------------------------------------------------------------------
 
@@ -621,11 +670,7 @@ async def _collect_sse(relay_messages):
 def _sse_data_objects(sse_text):
     import json as json_mod
 
-    return [
-        json_mod.loads(ln[6:])
-        for ln in sse_text.splitlines()
-        if ln.startswith("data:") and "[DONE]" not in ln
-    ]
+    return [json_mod.loads(ln[6:]) for ln in sse_text.splitlines() if ln.startswith("data:") and "[DONE]" not in ln]
 
 
 def test_streaming_relays_chunk_verbatim(mock_globus):
@@ -680,18 +725,11 @@ def test_streaming_relays_tool_call_deltas(mock_globus):
     sse_text = asyncio.get_event_loop().run_until_complete(_collect_sse(relay_messages))
     objs = _sse_data_objects(sse_text)
 
-    tool_calls = [
-        tc
-        for o in objs
-        for c in o.get("choices", [])
-        for tc in (c.get("delta", {}).get("tool_calls") or [])
-    ]
+    tool_calls = [tc for o in objs for c in o.get("choices", []) for tc in (c.get("delta", {}).get("tool_calls") or [])]
     assert tool_calls, "tool_calls deltas were dropped by the relay"
     assert tool_calls[0]["function"]["name"] == "get_weather"
 
-    finish_reasons = [
-        c.get("finish_reason") for o in objs for c in o.get("choices", []) if c.get("finish_reason")
-    ]
+    finish_reasons = [c.get("finish_reason") for o in objs for c in o.get("choices", []) if c.get("finish_reason")]
     assert finish_reasons[-1] == "tool_calls"
 
 

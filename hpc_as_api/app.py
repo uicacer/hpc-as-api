@@ -246,6 +246,13 @@ def make_app(
 
         raw_model = body.get("model", "")
         model = raw_model.removeprefix("openai/")
+
+        if _use_globus and _models and model not in _models:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Model '{model}' not found. Available: {list(_models.keys())}",
+            )
+
         messages = validate_messages(body.get("messages", []))
         stream = bool(body.get("stream", False))
 
