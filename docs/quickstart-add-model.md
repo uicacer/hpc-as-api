@@ -2,29 +2,9 @@
 
 **Prerequisites:** SSH access to Lakeshore, HuggingFace account.
 
----
-
-## Who can do what
-
-| | Anas / Steve | Collaborator |
-|---|---|---|
-| GPU partition | `batch_gpuapi` / `ts_acer` — up to 2× A100 80GB (ga-002) | `batch_gpu2` — 1× H100 NVL 95.8GB (ghi2-002) |
-| Tensor parallelism | TP2 (2 GPUs) | TP1 (1 GPU only) |
-| Max BF16 model size | ~62B params (Gemma 4 31B fills both A100s) | ~80B params in theory; ~34B comfortably |
-| Register model in gateway | Yes (owns proxy-env on relay VM) | No — contact Anas with alias + port |
-
-> Collaborators use `ghi2-002` (H100 NVL) — the same cluster, same vLLM container, same gateway. Only the SLURM partition and number of GPUs differ.
-
-**Collaborator onboarding path:**
-1. Get a Lakeshore account (contact UIC ACER)
-2. Follow Steps 1–4 below using `batch_gpu2` and `ghi2-002` (1 GPU)
-3. Send Anas the model alias and port → he registers it in the gateway (Step 6)
-4. Anas sends back an API key — use the gateway exactly like any other model
-
 **Storage layout (quick reminder):**
-- Model weights → your own project space (e.g. `/projects/acer_hpc_admin/<YOUR_NETID>/huggingface/`)
-- vLLM container → you can use Anas's container at `/projects/acer_hpc_admin/nassar/containers/vllm-0.23.0` (world-readable) or pull your own
-- Anas's containers and weights are at `/projects/acer_hpc_admin/nassar/` — readable but not writable
+- Model weights → `/projects/acer_hpc_admin/nassar/huggingface/` (persists across jobs; shared project storage, not home dir)
+- vLLM container (Apptainer SIF) → `/projects/acer_hpc_admin/nassar/containers/vllm-0.23.0` — pinned version with all CUDA deps; Docker is not available on Lakeshore (no root), so we use Apptainer
 
 ---
 
@@ -88,71 +68,70 @@ tail -f /projects/acer_hpc_admin/nassar/logs/download-JOBID.out  # watch progres
 
 ---
 
-## Step 4 — Start vLLM
+## Step 4 — Start vLLM on ga-002
 
-Choose the right template based on your GPU allocation:
-
-### If you are Anas/Steve (2× A100, ga-002, batch_gpuapi)
-
-See the full script in `adding-a-new-model.md` Part 3. Use `--gres=gpu:2`, `--tensor-parallel-size 2`, `--partition=batch_gpuapi`, `--account=ts_acer`, `--nodelist=ga-002`.
-
-### If you are a collaborator (1× H100 NVL, ghi2-002, batch_gpu2)
-
-Create `~/scripts/vllm-MODELNAME.sh` using the template below.
-Change `MODEL`, `PORT`, `--served-model-name`, and `--tool-call-parser` / `--chat-template` for your model family.
+Create `~/STREAM/scripts/vllm-MODELNAME.sh`. Change `MODEL`, `PORT`,
+`--served-model-name`, and `--tool-call-parser` / `--chat-template` if the
+model family differs from Gemma 4.
 
 ```bash
 #!/bin/bash
 #SBATCH --job-name=MODELNAME           # name shown in squeue
-#SBATCH --partition=batch_gpu2         # collaborator GPU partition — ghi2-002
-#SBATCH --nodelist=ghi2-002            # pin to the H100 node
-#SBATCH --gres=gpu:1                   # 1× H100 NVL 95.8GB
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=60G
-#SBATCH --time=48:00:00
-#SBATCH --output=/home/%u/logs/%x-%j.log
+#SBATCH --partition=batch_gpuapi       # GPU partition for ga-002
+#SBATCH --account=ts_acer              # required billing account for batch_gpuapi
+#SBATCH --nodelist=ga-002              # pin to this specific GPU node
+#SBATCH --gres=gpu:2                   # request both A100 GPUs (needed for 128K context)
+#SBATCH --cpus-per-task=8              # CPU cores for the vLLM process
+#SBATCH --mem=80G                      # system RAM for model loading and workers
+#SBATCH --time=48:00:00                # keep running for 48 hours
+#SBATCH --output=logs/%x-%j.log        # log file (%x = job name, %j = job ID)
 
-MODEL="your-org/your-model"            # ← HuggingFace model ID
-PORT=8002                              # ← use 8002+ (8001 is taken by Anas's model)
-PROJECT_DIR="/projects/acer_hpc_admin/nassar"      # reuse Anas's container and weights cache
-YOUR_PROJECT="/projects/acer_hpc_admin/YOUR_NETID" # ← your own project space for weights
-CONTAINER="${PROJECT_DIR}/containers/vllm-0.23.0"
+MODEL="google/gemma-4-31B-it"              # ← HuggingFace model ID (used to load weights)
+PORT=8001                                   # ← change if running a second model on the same node
+PROJECT_DIR="/projects/acer_hpc_admin/nassar"
+CONTAINER="${PROJECT_DIR}/containers/vllm-0.23.0"  # pinned container version
 
-echo "vLLM: ${MODEL} | Job: $SLURM_JOB_ID | Node: $SLURM_NODELIST | Started: $(date)"
+echo "=========================================="
+echo "vLLM: ${MODEL} | Job: $SLURM_JOB_ID | Node: $SLURM_NODELIST"
+echo "Started: $(date)"
+echo "=========================================="
 
-source /etc/profile
-module load apptainer
+source /etc/profile       # initialize the module system (required in SLURM batch jobs)
+module load apptainer     # make the apptainer command available
 
-export CUDA_VISIBLE_DEVICES=0
-export HF_HOME="${YOUR_PROJECT}/huggingface"
-export HF_TOKEN=$(cat "${YOUR_PROJECT}/.hf_token")
+export CUDA_VISIBLE_DEVICES=0,1    # use both GPUs on ga-002
+export HF_HOME="${PROJECT_DIR}/huggingface"          # where weights are stored
+export HF_TOKEN=$(cat "${PROJECT_DIR}/.hf_token")    # HuggingFace token for gated models
+export NCCL_P2P_DISABLE=0          # enable direct GPU-to-GPU communication via NVLink
+export NCCL_SHM_DISABLE=0          # enable shared memory transport between GPUs
 
-apptainer exec --nv --no-home --env PYTHONNOUSERSITE=1 "${CONTAINER}" \
+apptainer exec --nv \               # --nv: pass GPUs into the container
+    --no-home \                     # don't mount home dir (keeps container isolated)
+    --env PYTHONNOUSERSITE=1 \      # ignore user's local Python packages inside container
+    "${CONTAINER}" \
     vllm serve "${MODEL}" \
-    --host 127.0.0.1 \             # loopback only — security requirement
+    --host 127.0.0.1 \              # loopback only — no other cluster node can reach this port
     --port "${PORT}" \
-    --tensor-parallel-size 1 \     # 1 GPU only — collaborator allocation
-    --max-model-len 32768 \        # 32K context fits in 1× H100 for most models
-    --gpu-memory-utilization 0.90 \
-    --max-num-seqs 64 \
-    --dtype auto \
-    --enable-prefix-caching \
-    --enable-chunked-prefill \
-    --served-model-name YOUR-ALIAS # ← the alias clients use in "model": "YOUR-ALIAS"
+    --tensor-parallel-size 2 \      # split model across 2 GPUs via NVLink
+    --max-model-len 131072 \        # 128K context window (131072 = 128 × 1024) — do not reduce
+    --gpu-memory-utilization 0.92 \ # reserve 92% of VRAM for weights + KV cache
+    --max-num-seqs 128 \            # max concurrent requests
+    --dtype auto \                  # auto-select best dtype (BF16 on A100)
+    --enable-prefix-caching \       # cache repeated system prompts — free speedup
+    --enable-chunked-prefill \      # interleave prefill and decode for better throughput
+    --enable-auto-tool-choice \     # enable OpenAI-compatible tool/function calling
+    --tool-call-parser gemma4 \     # parse Gemma 4's tool-call format → OpenAI format
+    --reasoning-parser gemma4 \     # expose <think>...</think> as reasoning_content field
+    --chat-template /vllm-workspace/examples/tool_chat_template_gemma4.jinja \  # required for tool calling to work
+    --served-model-name gemma4-31b  # ← the alias clients use in "model": "gemma4-31b"
 
 echo "Service stopped: $(date)"
 ```
 
-**Key differences from Anas's script:**
-- `batch_gpu2` + `ghi2-002` instead of `batch_gpuapi` + `ga-002` — no `--account=ts_acer` needed
-- `--gres=gpu:1` and `--tensor-parallel-size 1` — 1 GPU only
-- Port `8002+` — port 8001 is already used by Gemma 4 on that node
-- `--max-model-len 32768` — conservative default; H100 NVL has 95.8GB so you can go higher for smaller models
-
 ```bash
-sbatch ~/scripts/vllm-MODELNAME.sh
-squeue -u YOUR_NETID                               # confirm STATE=RUNNING on ghi2-002
-tail -f ~/logs/MODELNAME-JOBID.log
+sbatch ~/STREAM/scripts/vllm-MODELNAME.sh         # submit the job
+squeue -u nassar                                   # confirm STATE=RUNNING on ga-002
+tail -f ~/STREAM/scripts/logs/MODELNAME-JOBID.log  # watch startup log
 # Wait for: "Application startup complete."        # first run ~15min, restarts ~5min
 ```
 
@@ -162,13 +141,11 @@ tail -f ~/logs/MODELNAME-JOBID.log
 
 Once you see `Application startup complete.` in the log, send Anas:
 
-1. The **model alias** you used in `--served-model-name` (e.g. `my-model-7b`)
-2. The **port** (e.g. `8002`)
-3. The **node** it's running on (`ghi2-002` for collaborators)
+1. The **model alias** you used in `--served-model-name` (e.g. `gemma4-31b`)
+2. The **port** (e.g. `8001`)
 
-**Anas will do the rest** — register the model in the gateway and issue you an API key. This takes about 2 minutes on his side.
-
-> **Note:** Your SLURM job must stay running for the model to be accessible through the gateway. If the job ends (walltime, OOM, manual cancel), the model disappears from the gateway until you resubmit. Keep an eye on `squeue -u YOUR_NETID`.
+**Anas will do the rest** — register the model in the gateway and restart the
+service. This takes about 2 minutes on his side.
 
 ---
 
