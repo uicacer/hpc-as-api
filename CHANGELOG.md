@@ -32,6 +32,18 @@ choices, and the `include_usage` final chunk (with
 This supersedes the empty-choices usage handling added in 0.4.1 — the usage
 chunk now passes through like any other.
 
+**Multi-turn tool calling unblocked in `validate_messages`.** The proxy's own
+message validator rejected `role: "tool"` (allowed only user/assistant/system)
+and rejected any message with `content: null`. Both shapes are required for
+tool calling: a tool-result turn uses `role: "tool"`, and an assistant turn
+that only issues tool calls has `content: null` with a `tool_calls` array. A
+multi-turn tool exchange therefore failed at the gateway with HTTP 400
+(`invalid role 'tool'`) **before ever reaching vLLM** — the `{"detail": …}`
+FastAPI error envelope, not vLLM's. `validate_messages` now accepts the `tool`
+and `developer` roles and allows `content: null` when `tool_calls` is present.
+(This corrects an earlier mis-diagnosis that attributed the 400 to a server-side
+chat-template; the model's tool-aware template was never the cause.)
+
 **Breaking (internal API):** `GlobusComputeClient.submit_inference()` and
 `submit_streaming_inference()` replace their `temperature` / `max_tokens` /
 `chat_template_kwargs` / `tools` / `tool_choice` keyword arguments with a
@@ -40,14 +52,13 @@ single `params: dict`. The remote functions (`remote_vllm_inference`,
 top-level package API is unchanged.
 
 **Server-side requirement (unchanged from 0.4.1):** `cached_tokens` reporting
-still requires launching vLLM with `--enable-prompt-tokens-details`. Multi-turn
-tool calling (the `tool` role) requires the model's tool-aware chat template via
-`--chat-template`.
+still requires launching vLLM with `--enable-prompt-tokens-details`.
 
 **Tests** — relay tests now assert verbatim chunk passthrough, including a
 streaming tool-call-delta regression test, the `include_usage` chunk, and
-arbitrary sampling params (`top_p`, `seed`, `stop`) reaching vLLM. 47 unit
-tests pass.
+arbitrary sampling params (`top_p`, `seed`, `stop`) reaching vLLM; plus
+`validate_messages` tests for the `tool` role and null-content tool-call turns.
+51 unit tests pass.
 
 ## 0.4.1 (2026-06-16)
 

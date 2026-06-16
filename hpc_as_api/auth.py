@@ -435,15 +435,19 @@ def validate_messages(messages: list) -> list:
 
     Checks:
       - messages is a list of dicts
-      - each message has "role" (one of user/assistant/system) and "content"
-      - content is a string or a list (for multimodal messages with images)
+      - each message has "role" (user/assistant/system/developer/tool) and "content"
+      - content is a string or a list (for multimodal messages with images);
+        content may be null on an assistant message that carries tool_calls, and
+        on a tool message that uses content parts
       - individual text content is under 100K characters
       - total message count is under 500 turns (prevents context window abuse)
 
     Returns the validated messages list.
     Raises HTTP 400 with a descriptive message for any violation.
     """
-    allowed_roles = {"user", "assistant", "system"}
+    # "tool" and "developer" are valid OpenAI roles required for tool calling and
+    # system-style instructions; the Gemma 4 chat template handles both.
+    allowed_roles = {"user", "assistant", "system", "developer", "tool"}
     max_content_chars = 100_000  # ~75K tokens — well within any model's context
     max_messages = 500  # 250 full back-and-forth turns
 
@@ -469,6 +473,10 @@ def validate_messages(messages: list) -> list:
 
         content = msg.get("content")
         if content is None:
+            # An assistant turn that only issues tool calls legitimately has
+            # content=null (the tool_calls array carries the payload). Allow it.
+            if msg.get("tool_calls"):
+                continue
             raise HTTPException(status_code=400, detail=f"Message {i}: missing 'content' field")
 
         # Content can be a string (text only) or a list (multimodal: text + images)

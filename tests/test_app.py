@@ -499,6 +499,67 @@ def test_tools_forwarded_to_globus_submit(mock_globus):
 
 
 # ---------------------------------------------------------------------------
+# validate_messages — tool-calling message shapes must be accepted
+# ---------------------------------------------------------------------------
+
+
+def test_validate_messages_accepts_tool_role(mock_globus):
+    """A role:'tool' result message must pass validation (required for multi-turn)."""
+    from hpc_as_api.auth import validate_messages
+
+    messages = [
+        {"role": "user", "content": "Weather in Berlin?"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": '{"temp":"9C"}'},
+    ]
+    # Must not raise and must preserve the messages (incl. tool_calls/tool_call_id) verbatim.
+    assert validate_messages(messages) == messages
+
+
+def test_validate_messages_allows_null_content_with_tool_calls(mock_globus):
+    """An assistant tool-call turn has content=null; that must be allowed."""
+    from hpc_as_api.auth import validate_messages
+
+    messages = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": "c", "function": {"name": "f", "arguments": "{}"}}],
+        },
+    ]
+    assert validate_messages(messages) == messages
+
+
+def test_validate_messages_rejects_null_content_without_tool_calls(mock_globus):
+    """content=null on a normal message is still an error."""
+    from fastapi import HTTPException
+
+    from hpc_as_api.auth import validate_messages
+
+    with pytest.raises(HTTPException) as exc:
+        validate_messages([{"role": "user", "content": None}])
+    assert exc.value.status_code == 400
+
+
+def test_validate_messages_still_rejects_unknown_role(mock_globus):
+    """Genuinely invalid roles must still be rejected."""
+    from fastapi import HTTPException
+
+    from hpc_as_api.auth import validate_messages
+
+    with pytest.raises(HTTPException) as exc:
+        validate_messages([{"role": "robot", "content": "hi"}])
+    assert exc.value.status_code == 400
+
+
+# ---------------------------------------------------------------------------
 # Streaming relay: raw-chunk passthrough
 # ---------------------------------------------------------------------------
 
