@@ -588,7 +588,7 @@ wheels = [
 
 [[package]]
 name = "hpc-as-api"
-version = "0.3.4"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
@@ -631,7 +631,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "ruff", marker = "extra == 'dev'" },
-    { name = "streamrelay", specifier = ">=0.3.0" },
+    { name = "streamrelay", specifier = ">=0.3.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
     { name = "websockets", specifier = ">=13.0" },
 ]
@@ -1644,15 +1644,15 @@ wheels = [
 
 [[package]]
 name = "streamrelay"
-version = "0.3.0"
+version = "0.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ad/3f/7520dfad172ebff19fd78b1ff91b730261f23bff293bf72675c3ae89a44d/streamrelay-0.3.0.tar.gz", hash = "sha256:917e69235ff54a3610b6f47c148bf0b6835b435ffca075963d7417b5cc66824d", size = 812965, upload-time = "2026-05-28T04:02:06.741Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/a1/d6dd56574731a929ec17b14860c188610520250010769752cf45ec58fc06/streamrelay-0.3.1.tar.gz", hash = "sha256:072b50b63f1c939124769877610f9203fdbe83d053ae244bc4f9a3682e0a54e7", size = 819763, upload-time = "2026-06-11T00:05:51.377Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f1/f3/a7710c535f9ac8c4536a6af6bdeca6129adccc101c893200d615b6f94c25/streamrelay-0.3.0-py3-none-any.whl", hash = "sha256:f0f09def22ac1bfdca8d931644bda30d32498f849a6fff0b398ad3da2b9bd7bc", size = 39323, upload-time = "2026-05-28T04:02:05.294Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/8b/1f5850c6751a37b9e40fc371835bc0e71087cb3c6c069076c55931134ca8/streamrelay-0.3.1-py3-none-any.whl", hash = "sha256:3c7559a7ea0ec3b1cf2662c6dc1a0b243accdb1a1786fbd942898fc7cee07319", size = 39958, upload-time = "2026-06-11T00:05:52.745Z" },
 ]
 
 [[package]]

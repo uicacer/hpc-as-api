@@ -250,6 +250,8 @@ def make_app(
         stream = body.get("stream", False)
         max_tokens = body.get("max_tokens")
         chat_template_kwargs = body.get("chat_template_kwargs")
+        tools = body.get("tools")
+        tool_choice = body.get("tool_choice")
 
         logger.info(
             f"Chat request: caller={caller.log_safe_id()}, model={model}, messages={len(messages)}, stream={stream}"
@@ -269,9 +271,14 @@ def make_app(
                 _relay_enc_key,
                 _endpoint_id,
                 chat_template_kwargs=chat_template_kwargs,
+                tools=tools,
+                tool_choice=tool_choice,
             )
         else:
-            return await _route_via_direct(model, messages, temperature, max_tokens, stream, _direct_url)
+            return await _route_via_direct(
+                model, messages, temperature, max_tokens, stream, _direct_url,
+                tools=tools, tool_choice=tool_choice,
+            )
 
     fastapi_app.include_router(_router)
     return fastapi_app
@@ -295,6 +302,8 @@ async def _route_via_globus_compute(
     relay_enc_key,
     endpoint_id,
     chat_template_kwargs=None,
+    tools=None,
+    tool_choice=None,
 ):
     client = client_ref[0]
     if not client or not client.is_available():
@@ -313,6 +322,8 @@ async def _route_via_globus_compute(
                 relay_secret,
                 relay_enc_key,
                 chat_template_kwargs=chat_template_kwargs,
+                tools=tools,
+                tool_choice=tool_choice,
             )
         except Exception as e:
             logger.warning(f"Relay streaming failed — falling back to batch mode: {e}")
@@ -325,6 +336,8 @@ async def _route_via_globus_compute(
             max_tokens=max_tokens,
             model=model,
             chat_template_kwargs=chat_template_kwargs,
+            tools=tools,
+            tool_choice=tool_choice,
         )
 
         if "error" in result:
@@ -359,6 +372,8 @@ async def _route_via_globus_compute_streaming(
     relay_secret,
     relay_enc_key,
     chat_template_kwargs=None,
+    tools=None,
+    tool_choice=None,
 ):
     # Pass the caller's Globus token when available — gives per-user SLURM attribution.
     globus_token = caller.globus_token if caller.auth_mode == "globus" else None
@@ -371,6 +386,8 @@ async def _route_via_globus_compute_streaming(
         relay_url=relay_url,
         globus_token=globus_token,
         chat_template_kwargs=chat_template_kwargs,
+        tools=tools,
+        tool_choice=tool_choice,
     )
 
     if "error" in result:
@@ -407,13 +424,14 @@ async def _route_via_globus_compute_streaming(
                         yield f"data: {json.dumps(chunk)}\n\n"
 
                     elif msg["type"] == "done":
+                        finish_reason = msg.get("finish_reason", "stop")
                         usage = msg.get("usage", {})
+                        final_chunk: dict = {
+                            "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+                        }
                         if usage:
-                            final_chunk = {
-                                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-                                "usage": usage,
-                            }
-                            yield f"data: {json.dumps(final_chunk)}\n\n"
+                            final_chunk["usage"] = usage
+                        yield f"data: {json.dumps(final_chunk)}\n\n"
                         yield "data: [DONE]\n\n"
                         break
 
@@ -429,7 +447,7 @@ async def _route_via_globus_compute_streaming(
     return StreamingResponse(sse_generator(), media_type="text/event-stream")
 
 
-async def _route_via_direct(model, messages, temperature, max_tokens, stream, direct_url):
+async def _route_via_direct(model, messages, temperature, max_tokens, stream, direct_url, tools=None, tool_choice=None):
     if max_tokens is None:
         max_tokens = 2048
 
@@ -440,34 +458,49 @@ async def _route_via_direct(model, messages, temperature, max_tokens, stream, di
         "max_tokens": max_tokens,
         "stream": stream,
     }
+    if tools is not None:
+        payload["tools"] = tools
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
     target_url = f"{direct_url}/v1/chat/completions"
     logger.info(f"Direct vLLM request: {target_url}")
 
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            if stream:
-                async with client.stream("POST", target_url, json=payload) as response:
-                    if response.status_code != 200:
-                        error_text = await response.aread()
-                        raise HTTPException(
-                            status_code=response.status_code,
-                            detail=f"vLLM error: {error_text.decode()}",
-                        )
-
-                    async def stream_generator():
-                        async for line in response.aiter_lines():
-                            if line.strip():
-                                yield line + "\n"
-
-                    return StreamingResponse(stream_generator(), media_type="text/event-stream")
-            else:
-                response = await client.post(target_url, json=payload)
-                if response.status_code != 200:
+        if stream:
+            # The httpx client and response stream must remain open for the full
+            # duration of body iteration. Defining the generator with the client
+            # inside keeps both alive until the consumer is done.
+            async def stream_generator():
+                try:
+                    async with httpx.AsyncClient(timeout=120.0) as _client:
+                        async with _client.stream("POST", target_url, json=payload) as resp:
+                            if resp.status_code != 200:
+                                error_text = await resp.aread()
+                                raise HTTPException(
+                                    status_code=resp.status_code,
+                                    detail=f"vLLM error: {error_text.decode()}",
+                                )
+                            async for line in resp.aiter_lines():
+                                if line.strip():
+                                    yield line + "\n"
+                except httpx.ConnectError as e:
                     raise HTTPException(
-                        status_code=response.status_code,
-                        detail=f"vLLM error: {response.text}",
-                    )
-                return response.json()
+                        status_code=503,
+                        detail=f"Cannot connect to vLLM. Is the tunnel running? Error: {e}",
+                    ) from e
+                except httpx.TimeoutException as e:
+                    raise HTTPException(status_code=504, detail="vLLM request timed out") from e
+
+            return StreamingResponse(stream_generator(), media_type="text/event-stream")
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(target_url, json=payload)
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"vLLM error: {response.text}",
+                )
+            return response.json()
 
     except httpx.ConnectError as e:
         raise HTTPException(

@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.4.1 (2026-06-16)
+
+### Fix: tool calling, streaming finish_reason, and direct-mode streaming lifecycle
+
+**Tool calling passthrough** — `tools` and `tool_choice` were silently stripped
+from every request. They are now forwarded on all three routing paths (direct
+HTTP, Globus Compute non-streaming, Globus Compute streaming). The remote
+functions serialised for Globus Compute (`_REMOTE_FN_SOURCE`,
+`_REMOTE_STREAMING_FN_SOURCE`) also accept and forward both parameters to vLLM.
+
+**Streaming `finish_reason`** — the SSE generator in the Globus Compute
+streaming path only emitted `finish_reason` when vLLM also returned a `usage`
+block; vLLM typically omits usage in streaming so clients never received
+`finish_reason`. The final chunk is now always emitted with `finish_reason`
+(defaulting to `"stop"`), with usage added when present.
+
+**Streaming `usage` support** — the Globus Compute streaming remote function
+now includes `"stream_options": {"include_usage": true}` in the vLLM payload
+and passes the usage block through the relay `done` message.
+
+**Direct-mode streaming lifecycle fix** — the `httpx.AsyncClient` and
+`client.stream()` context were created outside the `StreamingResponse`
+generator, causing the response stream to be closed before the generator
+consumed it. Both are now scoped entirely inside `stream_generator()`.
+
+**New tests** — 8 unit tests in `tests/test_app.py` cover tools forwarding,
+`finish_reason` emission, and the streaming fix. Integration tests in
+`tests/test_integration.py` run against LM Studio in direct mode, with tool-
+calling tests automatically skipped when the loaded model's chat template does
+not support tools.
+
 ## 0.3.4 (2026-06-10)
 
 ### Messaging: domain-agnostic positioning throughout

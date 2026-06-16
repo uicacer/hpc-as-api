@@ -270,3 +270,364 @@ def test_api_key_caller_sends_no_globus_token(mock_globus):
 
     call_kwargs = mock_client.submit_streaming_inference.call_args.kwargs
     assert call_kwargs.get("globus_token") is None
+
+
+# ---------------------------------------------------------------------------
+# tools / tool_choice passthrough
+# ---------------------------------------------------------------------------
+
+_SAMPLE_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get weather for a city",
+            "parameters": {
+                "type": "object",
+                "properties": {"location": {"type": "string"}},
+                "required": ["location"],
+            },
+        },
+    }
+]
+
+
+def test_tools_forwarded_to_direct_route(mock_globus):
+    """tools and tool_choice in the request body must be forwarded to _route_via_direct."""
+    captured: dict = {}
+
+    async def spy(model, messages, temperature, max_tokens, stream, direct_url, tools=None, tool_choice=None):
+        captured["tools"] = tools
+        captured["tool_choice"] = tool_choice
+        return {"choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]}
+
+    with patch("hpc_as_api.app._route_via_direct", side_effect=spy):
+        client = _direct_client(mock_globus)
+        resp = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer testkey"},
+            json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "Weather in Paris?"}],
+                "tools": _SAMPLE_TOOLS,
+                "tool_choice": "auto",
+            },
+        )
+
+    assert resp.status_code == 200
+    assert captured["tools"] == _SAMPLE_TOOLS
+    assert captured["tool_choice"] == "auto"
+
+
+def test_tool_choice_required_forwarded(mock_globus):
+    """tool_choice='required' must be preserved exactly."""
+    captured: dict = {}
+
+    async def spy(model, messages, temperature, max_tokens, stream, direct_url, tools=None, tool_choice=None):
+        captured["tool_choice"] = tool_choice
+        return {"choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "tool_calls"}]}
+
+    with patch("hpc_as_api.app._route_via_direct", side_effect=spy):
+        client = _direct_client(mock_globus)
+        client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer testkey"},
+            json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": _SAMPLE_TOOLS,
+                "tool_choice": "required",
+            },
+        )
+
+    assert captured["tool_choice"] == "required"
+
+
+def test_no_tools_in_request_passes_none(mock_globus):
+    """When tools are absent from the request body, None is forwarded (not an empty list)."""
+    captured: dict = {}
+
+    async def spy(model, messages, temperature, max_tokens, stream, direct_url, tools=None, tool_choice=None):
+        captured["tools"] = tools
+        captured["tool_choice"] = tool_choice
+        return {"choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]}
+
+    with patch("hpc_as_api.app._route_via_direct", side_effect=spy):
+        client = _direct_client(mock_globus)
+        client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer testkey"},
+            json={"model": "test-model", "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert captured["tools"] is None
+    assert captured["tool_choice"] is None
+
+
+@pytest.mark.asyncio
+async def test_route_via_direct_includes_tools_in_vllm_payload(mock_globus):
+    """_route_via_direct must include tools/tool_choice in the forwarded httpx payload."""
+    import hpc_as_api.app as app_module
+
+    captured: dict = {}
+
+    fake_response = MagicMock()
+    fake_response.status_code = 200
+    fake_response.json.return_value = {
+        "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "tool_calls"}]
+    }
+
+    mock_aclient = AsyncMock()
+    mock_aclient.__aenter__ = AsyncMock(return_value=mock_aclient)
+    mock_aclient.__aexit__ = AsyncMock(return_value=None)
+
+    async def capture_post(url, **kwargs):
+        captured.update(kwargs.get("json") or {})
+        return fake_response
+
+    mock_aclient.post = capture_post
+
+    with patch.object(app_module.httpx, "AsyncClient", return_value=mock_aclient):
+        await app_module._route_via_direct(
+            model="test-model",
+            messages=[{"role": "user", "content": "Weather in Paris?"}],
+            temperature=0.7,
+            max_tokens=100,
+            stream=False,
+            direct_url="http://fake:8000",
+            tools=_SAMPLE_TOOLS,
+            tool_choice="auto",
+        )
+
+    assert captured.get("tools") == _SAMPLE_TOOLS
+    assert captured.get("tool_choice") == "auto"
+
+
+@pytest.mark.asyncio
+async def test_route_via_direct_omits_tools_when_none(mock_globus):
+    """_route_via_direct must not send tools/tool_choice keys when they are None."""
+    import hpc_as_api.app as app_module
+
+    captured: dict = {}
+
+    fake_response = MagicMock()
+    fake_response.status_code = 200
+    fake_response.json.return_value = {
+        "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]
+    }
+
+    mock_aclient = AsyncMock()
+    mock_aclient.__aenter__ = AsyncMock(return_value=mock_aclient)
+    mock_aclient.__aexit__ = AsyncMock(return_value=None)
+
+    async def capture_post(url, **kwargs):
+        captured.update(kwargs.get("json") or {})
+        return fake_response
+
+    mock_aclient.post = capture_post
+
+    with patch.object(app_module.httpx, "AsyncClient", return_value=mock_aclient):
+        await app_module._route_via_direct(
+            model="test-model",
+            messages=[{"role": "user", "content": "hi"}],
+            temperature=0.7,
+            max_tokens=100,
+            stream=False,
+            direct_url="http://fake:8000",
+        )
+
+    assert "tools" not in captured
+    assert "tool_choice" not in captured
+
+
+def test_tools_forwarded_to_globus_submit(mock_globus):
+    """tools and tool_choice must reach submit_streaming_inference on the Globus path."""
+    import asyncio
+    from hpc_as_api.app import _route_via_globus_compute_streaming
+    from hpc_as_api.auth import CallerIdentity
+
+    caller = CallerIdentity(name="svc", auth_mode="api_key", globus_token=None)
+    mock_client = AsyncMock()
+    mock_client.submit_streaming_inference = AsyncMock(
+        return_value={"channel_id": "cccccccc-0000-0000-0000-000000000000"}
+    )
+
+    with patch("hpc_as_api.app.ws_connect", side_effect=Exception("no relay in tests")):
+        try:
+            asyncio.get_event_loop().run_until_complete(
+                _route_via_globus_compute_streaming(
+                    model="m",
+                    messages=[{"role": "user", "content": "hi"}],
+                    temperature=0.7,
+                    max_tokens=10,
+                    caller=caller,
+                    client=mock_client,
+                    relay_url="ws://fake",
+                    relay_secret="",
+                    relay_enc_key="",
+                    tools=_SAMPLE_TOOLS,
+                    tool_choice="required",
+                )
+            )
+        except Exception:
+            pass
+
+    kw = mock_client.submit_streaming_inference.call_args.kwargs
+    assert kw.get("tools") == _SAMPLE_TOOLS
+    assert kw.get("tool_choice") == "required"
+
+
+# ---------------------------------------------------------------------------
+# Streaming finish_reason fix
+# ---------------------------------------------------------------------------
+
+
+def test_streaming_done_chunk_always_has_finish_reason(mock_globus):
+    """The SSE 'done' relay message must yield a finish_reason chunk even without usage."""
+    import asyncio
+    import json as json_mod
+    from hpc_as_api.app import _route_via_globus_compute_streaming
+    from hpc_as_api.auth import CallerIdentity
+
+    caller = CallerIdentity(name="svc", auth_mode="api_key", globus_token=None)
+
+    relay_messages = [
+        json_mod.dumps({"type": "token", "content": "Hello"}),
+        json_mod.dumps({"type": "done"}),  # no usage, no finish_reason key
+    ]
+
+    mock_client = AsyncMock()
+    mock_client.submit_streaming_inference = AsyncMock(
+        return_value={"channel_id": "dddddddd-0000-0000-0000-000000000000"}
+    )
+
+    class FakeWS:
+        def __init__(self):
+            self._msgs = iter(relay_messages)
+
+        async def send(self, data):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._msgs)
+            except StopIteration:
+                raise StopAsyncIteration
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            pass
+
+    sse_chunks = []
+
+    async def run():
+        with patch("hpc_as_api.app.ws_connect", return_value=FakeWS()):
+            response = await _route_via_globus_compute_streaming(
+                model="m",
+                messages=[{"role": "user", "content": "hi"}],
+                temperature=0.7,
+                max_tokens=10,
+                caller=caller,
+                client=mock_client,
+                relay_url="wss://fake",
+                relay_secret="",
+                relay_enc_key="",
+            )
+            # StreamingResponse body is an async generator; collect it
+            async for chunk in response.body_iterator:
+                if chunk.strip():
+                    sse_chunks.append(chunk)
+
+    asyncio.get_event_loop().run_until_complete(run())
+
+    sse_text = "".join(sse_chunks)
+    # The final data chunk (before [DONE]) must carry finish_reason
+    data_lines = [ln[6:] for ln in sse_text.splitlines() if ln.startswith("data:") and "[DONE]" not in ln]
+    parsed = [json_mod.loads(d) for d in data_lines]
+    finish_reasons = [
+        c.get("finish_reason")
+        for p in parsed
+        for c in p.get("choices", [])
+        if c.get("finish_reason") is not None
+    ]
+    assert finish_reasons, "No finish_reason found in any SSE chunk"
+    assert finish_reasons[-1] == "stop"
+
+
+def test_streaming_done_preserves_tool_calls_finish_reason(mock_globus):
+    """finish_reason='tool_calls' from the relay must be preserved in the SSE stream."""
+    import asyncio
+    import json as json_mod
+    from hpc_as_api.app import _route_via_globus_compute_streaming
+    from hpc_as_api.auth import CallerIdentity
+
+    caller = CallerIdentity(name="svc", auth_mode="api_key", globus_token=None)
+
+    relay_messages = [
+        json_mod.dumps({"type": "token", "content": ""}),
+        json_mod.dumps({"type": "done", "finish_reason": "tool_calls"}),
+    ]
+
+    mock_client = AsyncMock()
+    mock_client.submit_streaming_inference = AsyncMock(
+        return_value={"channel_id": "eeeeeeee-0000-0000-0000-000000000000"}
+    )
+
+    class FakeWS:
+        def __init__(self):
+            self._msgs = iter(relay_messages)
+
+        async def send(self, data):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._msgs)
+            except StopIteration:
+                raise StopAsyncIteration
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            pass
+
+    sse_chunks = []
+
+    async def run():
+        with patch("hpc_as_api.app.ws_connect", return_value=FakeWS()):
+            response = await _route_via_globus_compute_streaming(
+                model="m",
+                messages=[{"role": "user", "content": "hi"}],
+                temperature=0.7,
+                max_tokens=10,
+                caller=caller,
+                client=mock_client,
+                relay_url="wss://fake",
+                relay_secret="",
+                relay_enc_key="",
+            )
+            async for chunk in response.body_iterator:
+                if chunk.strip():
+                    sse_chunks.append(chunk)
+
+    asyncio.get_event_loop().run_until_complete(run())
+
+    sse_text = "".join(sse_chunks)
+    data_lines = [ln[6:] for ln in sse_text.splitlines() if ln.startswith("data:") and "[DONE]" not in ln]
+    parsed = [json_mod.loads(d) for d in data_lines]
+    finish_reasons = [
+        c.get("finish_reason")
+        for p in parsed
+        for c in p.get("choices", [])
+        if c.get("finish_reason") is not None
+    ]
+    assert finish_reasons[-1] == "tool_calls"

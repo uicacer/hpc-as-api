@@ -105,7 +105,7 @@ _DEFAULT_TASK_TIMEOUT = int(os.getenv("GLOBUS_TASK_TIMEOUT", "240"))
 # reliably across both normal Python and PyInstaller-bundled environments.
 
 _REMOTE_FN_SOURCE = """\
-def remote_vllm_inference(vllm_url, model, messages, temperature, max_tokens, stream=False, chat_template_kwargs=None):
+def remote_vllm_inference(vllm_url, model, messages, temperature, max_tokens, stream=False, chat_template_kwargs=None, tools=None, tool_choice=None):
     \"\"\"
     Execute a vLLM inference request on the HPC cluster.
 
@@ -121,6 +121,8 @@ def remote_vllm_inference(vllm_url, model, messages, temperature, max_tokens, st
         stream: Whether to request SSE streaming from vLLM (not used in batch mode)
         chat_template_kwargs: Optional dict forwarded to vLLM as chat_template_kwargs
             (e.g., {"enable_thinking": True} to activate Gemma 4 reasoning mode)
+        tools: OpenAI-format tool definitions list
+        tool_choice: Tool selection mode ("auto", "required", "none", or specific tool)
 
     Returns:
         OpenAI-format response dict on success, or {"error": ..., "error_type": ...} on failure.
@@ -137,6 +139,10 @@ def remote_vllm_inference(vllm_url, model, messages, temperature, max_tokens, st
         }
         if chat_template_kwargs:
             payload["chat_template_kwargs"] = chat_template_kwargs
+        if tools:
+            payload["tools"] = tools
+        if tool_choice is not None:
+            payload["tool_choice"] = tool_choice
         try:
             response = requests.post(endpoint, json=payload, timeout=180)
             if response.status_code >= 400:
@@ -193,7 +199,7 @@ remote_vllm_inference = _ns["remote_vllm_inference"]
 _REMOTE_STREAMING_FN_SOURCE = """\
 def remote_vllm_streaming(
     vllm_url, model, messages, temperature, max_tokens,
-    relay_url, channel_id, chat_template_kwargs=None,
+    relay_url, channel_id, chat_template_kwargs=None, tools=None, tool_choice=None,
 ):
     \"\"\"
     Execute a streaming vLLM inference on the HPC cluster.
@@ -258,9 +264,14 @@ def remote_vllm_streaming(
 
         # Call vLLM with stream=True to get tokens as SSE events.
         _payload = {"model": model, "messages": messages, "temperature": temperature,
-                    "max_tokens": max_tokens, "stream": True}
+                    "max_tokens": max_tokens, "stream": True,
+                    "stream_options": {"include_usage": True}}
         if chat_template_kwargs:
             _payload["chat_template_kwargs"] = chat_template_kwargs
+        if tools:
+            _payload["tools"] = tools
+        if tool_choice is not None:
+            _payload["tool_choice"] = tool_choice
         response = requests.post(
             f"{vllm_url}/v1/chat/completions",
             json=_payload,
@@ -278,6 +289,7 @@ def remote_vllm_streaming(
         # Each line looks like: "data: {"choices":[{"delta":{"content":"Hello"}}]}"
         # Blank lines are SSE event separators — skip them.
         usage = {}
+        finish_reason = "stop"
         tokens_sent = 0
         for line in response.iter_lines(decode_unicode=True):
             if not line or not line.startswith("data: "):
@@ -292,7 +304,10 @@ def remote_vllm_streaming(
             choices = chunk.get("choices", [])
             if not choices:
                 continue
-            delta = choices[0].get("delta", {})
+            choice = choices[0]
+            if choice.get("finish_reason"):
+                finish_reason = choice["finish_reason"]
+            delta = choice.get("delta", {})
             content = delta.get("content")
             reasoning = delta.get("reasoning") or delta.get("reasoning_content")
             if content or reasoning:
@@ -307,7 +322,7 @@ def remote_vllm_streaming(
                 usage = chunk["usage"]
 
         # Signal stream completion. Consumer reads this and closes its connection.
-        _send(ws, {"type": "done", "usage": usage})
+        _send(ws, {"type": "done", "finish_reason": finish_reason, "usage": usage})
 
     except Exception as e:
         if ws:
@@ -633,6 +648,8 @@ class GlobusComputeClient:
         model: str = "",
         _retry: bool = False,
         chat_template_kwargs: dict | None = None,
+        tools: list | None = None,
+        tool_choice: str | dict | None = None,
     ) -> dict[str, Any]:
         """
         Submit a batch inference job to the HPC cluster and wait for the full result.
@@ -710,6 +727,8 @@ class GlobusComputeClient:
                 max_tokens,
                 False,  # stream=False — batch mode
                 chat_template_kwargs,
+                tools,
+                tool_choice,
             )
             t_submit = time.perf_counter()
 
@@ -816,6 +835,9 @@ class GlobusComputeClient:
                     max_tokens=max_tokens,
                     model=model,
                     _retry=True,
+                    chat_template_kwargs=chat_template_kwargs,
+                    tools=tools,
+                    tool_choice=tool_choice,
                 )
 
             return {"error": str(e), "error_type": type(e).__name__}
@@ -833,6 +855,8 @@ class GlobusComputeClient:
         relay_url: str = "",
         globus_token: str | None = None,
         chat_template_kwargs: dict | None = None,
+        tools: list | None = None,
+        tool_choice: str | dict | None = None,
     ) -> dict[str, Any]:
         """
         Submit a streaming inference job. Returns a channel_id immediately.
@@ -933,6 +957,8 @@ class GlobusComputeClient:
                 relay_url,
                 channel_id,
                 chat_template_kwargs,
+                tools,
+                tool_choice,
                 # No relay credentials are passed as task arguments. Both
                 # RELAY_SECRET and RELAY_ENCRYPTION_KEY are read from
                 # os.environ on the endpoint (set in worker_init). This way
