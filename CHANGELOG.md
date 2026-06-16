@@ -20,16 +20,23 @@ block; vLLM typically omits usage in streaming so clients never received
 now includes `"stream_options": {"include_usage": true}` in the vLLM payload
 and passes the usage block through the relay `done` message.
 
+**Streaming usage drop fix** — vLLM emits its usage block (including
+`prompt_tokens_details.cached_tokens` when the server is launched with
+`--enable-prompt-tokens-details`) in a final SSE chunk whose `choices` is empty.
+The relay producer checked `if not choices: continue` *before* capturing usage,
+so that chunk — and all usage stats — was silently dropped on the streaming
+path. Usage is now captured before the empty-choices short-circuit, so
+per-request prefix-cache stats reach the client.
+
 **Direct-mode streaming lifecycle fix** — the `httpx.AsyncClient` and
 `client.stream()` context were created outside the `StreamingResponse`
 generator, causing the response stream to be closed before the generator
 consumed it. Both are now scoped entirely inside `stream_generator()`.
 
-**New tests** — 8 unit tests in `tests/test_app.py` cover tools forwarding,
-`finish_reason` emission, and the streaming fix. Integration tests in
-`tests/test_integration.py` run against LM Studio in direct mode, with tool-
-calling tests automatically skipped when the loaded model's chat template does
-not support tools.
+**New tests** — 8 unit tests in `tests/test_app.py` cover tools forwarding and
+`finish_reason` emission; a new test in `tests/test_compute.py` verifies the
+streaming relay forwards the usage block (incl. `cached_tokens`) from vLLM's
+empty-choices `include_usage` chunk.
 
 ## 0.3.4 (2026-06-10)
 

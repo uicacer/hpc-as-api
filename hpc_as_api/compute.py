@@ -301,6 +301,12 @@ def remote_vllm_streaming(
                 chunk = json.loads(payload)
             except json.JSONDecodeError:
                 continue
+            # Capture usage first: with stream_options.include_usage, vLLM emits
+            # a final chunk with choices=[] carrying the full usage block
+            # (including prompt_tokens_details.cached_tokens). Must run before the
+            # empty-choices short-circuit below, or usage is dropped.
+            if chunk.get("usage"):
+                usage = chunk["usage"]
             choices = chunk.get("choices", [])
             if not choices:
                 continue
@@ -318,8 +324,6 @@ def remote_vllm_streaming(
                     msg["reasoning_content"] = reasoning
                 _send(ws, msg)
                 tokens_sent += 1
-            if chunk.get("usage"):
-                usage = chunk["usage"]
 
         # Signal stream completion. Consumer reads this and closes its connection.
         _send(ws, {"type": "done", "finish_reason": finish_reason, "usage": usage})

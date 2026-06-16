@@ -148,3 +148,95 @@ def test_estimate_payload_size(mock_globus_modules):
     size = client._estimate_payload_size(messages)
     assert size > 0
     assert size < 1024  # small message, definitely under 1 KB
+
+
+# ---------------------------------------------------------------------------
+# remote_vllm_streaming: usage capture from include_usage chunk
+# ---------------------------------------------------------------------------
+
+
+class _FakeRelayWS:
+    """Records messages sent by the producer; no real network."""
+
+    def __init__(self):
+        self.sent: list[str] = []
+
+    def send(self, raw):
+        self.sent.append(raw)
+
+    def close(self):
+        pass
+
+
+class _FakeVLLMResponse:
+    def __init__(self, lines):
+        self._lines = lines
+        self.status_code = 200
+        self.text = ""
+
+    def iter_lines(self, decode_unicode=True):
+        yield from self._lines
+
+
+def test_streaming_relays_usage_with_cached_tokens(mock_globus_modules, monkeypatch):
+    """
+    vLLM emits its usage block (incl. prompt_tokens_details.cached_tokens) in a
+    final SSE chunk whose ``choices`` is empty. The relay producer must capture
+    that block and forward it in the ``done`` message — the empty-choices
+    short-circuit must not drop it.
+    """
+    from hpc_as_api.compute import remote_vllm_streaming
+
+    # No encryption → messages are sent as plaintext JSON we can parse.
+    monkeypatch.delenv("RELAY_ENCRYPTION_KEY", raising=False)
+    monkeypatch.delenv("RELAY_SECRET", raising=False)
+
+    sse_lines = [
+        'data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+        # include_usage final chunk: empty choices, full usage block
+        'data: {"choices":[],"usage":{"prompt_tokens":600,"completion_tokens":16,'
+        '"total_tokens":616,"prompt_tokens_details":{"cached_tokens":576}}}',
+        "data: [DONE]",
+    ]
+
+    fake_ws = _FakeRelayWS()
+
+    # remote_vllm_streaming does `import requests` and
+    # `from websockets.sync.client import connect` internally — neither is a
+    # local dependency (they live on the HPC endpoint), so inject fakes.
+    import sys
+    import types
+
+    fake_requests = types.ModuleType("requests")
+    fake_requests.post = lambda *a, **k: _FakeVLLMResponse(sse_lines)
+    monkeypatch.setitem(sys.modules, "requests", fake_requests)
+
+    fake_ws_client = types.ModuleType("websockets.sync.client")
+    fake_ws_client.connect = lambda *a, **k: fake_ws
+    fake_ws_pkg = types.ModuleType("websockets.sync")
+    fake_ws_pkg.client = fake_ws_client
+    fake_ws_root = types.ModuleType("websockets")
+    fake_ws_root.sync = fake_ws_pkg
+    monkeypatch.setitem(sys.modules, "websockets", fake_ws_root)
+    monkeypatch.setitem(sys.modules, "websockets.sync", fake_ws_pkg)
+    monkeypatch.setitem(sys.modules, "websockets.sync.client", fake_ws_client)
+
+    result = remote_vllm_streaming(
+        vllm_url="http://localhost:8000",
+        model="gemma4-31b",
+        messages=[{"role": "user", "content": "hi"}],
+        temperature=0.0,
+        max_tokens=16,
+        relay_url="ws://localhost:9999",
+        channel_id="chan-1",
+    )
+
+    assert result["ok"] is True
+
+    done = [json.loads(m) for m in fake_ws.sent]
+    done_msgs = [m for m in done if m.get("type") == "done"]
+    assert done_msgs, "no done message sent"
+    usage = done_msgs[-1].get("usage", {})
+    assert usage.get("prompt_tokens_details", {}).get("cached_tokens") == 576
+    assert done_msgs[-1].get("finish_reason") == "stop"
