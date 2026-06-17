@@ -136,6 +136,12 @@ def make_app(
 
     _direct_url = direct_vllm_url or os.getenv("LAKESHORE_VLLM_ENDPOINT", "http://localhost:8000")
 
+    # When USE_GLOBUS_COMPUTE=true but a direct tunnel URL is configured,
+    # the proxy will auto-detect the tunnel on each request and prefer it when
+    # available, falling back to Globus Compute transparently.
+    _tunnel_url = os.getenv("LAKESHORE_VLLM_ENDPOINT", "") if _use_globus else ""
+    _tunnel_check_timeout = float(os.getenv("TUNNEL_CHECK_TIMEOUT", "1.0"))
+
     # Build the Authenticator from AuthConfig, Authenticator, or env vars.
     if isinstance(auth, Authenticator):
         _authenticator = auth
@@ -184,11 +190,19 @@ def make_app(
 
     @_router.get("/health")
     async def health_check():
+        tunnel_up = await _tunnel_alive(_tunnel_url, _tunnel_check_timeout) if _tunnel_url else False
+        if tunnel_up:
+            mode = "ssh_tunnel"
+        elif _use_globus:
+            mode = "globus_compute"
+        else:
+            mode = "direct"
         return {
             "status": "healthy",
             "service": "HPC Gateway",
-            "mode": "globus_compute" if _use_globus else "direct",
+            "mode": mode,
             "globus_configured": bool(_client[0] and _client[0].is_available()),
+            "tunnel_up": tunnel_up,
             "models": list(_models.keys()),
             "relay_configured": bool(_relay_url),
         }
@@ -270,7 +284,12 @@ def make_app(
             f"Chat request: caller={caller.log_safe_id()}, model={model}, messages={len(messages)}, stream={stream}"
         )
 
-        if _use_globus:
+        # Auto-detect SSH tunnel: if a tunnel URL is configured and reachable,
+        # use it directly (low latency). Otherwise fall back to Globus Compute.
+        if _tunnel_url and await _tunnel_alive(_tunnel_url, _tunnel_check_timeout):
+            logger.info(f"Routing via SSH tunnel: {_tunnel_url}")
+            return await _route_via_direct(model, messages, stream, _tunnel_url, params)
+        elif _use_globus:
             return await _route_via_globus_compute(
                 model,
                 messages,
@@ -288,6 +307,21 @@ def make_app(
 
     fastapi_app.include_router(_router)
     return fastapi_app
+
+
+# ---------------------------------------------------------------------------
+# Tunnel health check
+# ---------------------------------------------------------------------------
+
+
+async def _tunnel_alive(tunnel_url: str, timeout: float = 1.0) -> bool:
+    """Return True if the SSH tunnel endpoint is reachable and vLLM is healthy."""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{tunnel_url}/health", timeout=timeout)
+            return resp.status_code == 200
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
