@@ -4,13 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hpc-as-api"
-version = "0.5.4"
+version = "0.5.5"
 description = "Domain-agnostic HTTP gateway for any HPC function via Globus Compute + WebSocket relay"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
 authors = [
     { name = "Anas Nassar", email = "nassar@uic.edu" },
+    { name = "Chris Kanich", email = "ckanich@uic.edu" },
+    { name = "Steve Mohr", email = "smohr@uic.edu" },
 ]
 keywords = ["hpc", "globus-compute", "streaming", "api-gateway", "slurm", "scientific-computing", "domain-agnostic", "llm", "vllm"]
 classifiers = [

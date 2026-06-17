@@ -532,9 +532,10 @@ async def _route_via_direct(model, messages, stream, direct_url, params, globus_
                                     status_code=resp.status_code,
                                     detail=f"vLLM error: {error_text.decode()}",
                                 )
-                            async for line in resp.aiter_lines():
-                                if line.strip():
-                                    yield line + "\n"
+                            # Forward raw bytes so SSE event delimiters (\n\n)
+                            # are preserved exactly as vLLM emits them.
+                            async for chunk in resp.aiter_bytes():
+                                yield chunk
                 except (httpx.ConnectError, httpx.RemoteProtocolError) as e:
                     if globus_fallback_fn is not None:
                         # SSH tunnel dropped mid-stream — transparently reroute.
