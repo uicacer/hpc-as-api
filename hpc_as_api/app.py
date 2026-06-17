@@ -288,8 +288,39 @@ def make_app(
         # use it directly (low latency). Otherwise fall back to Globus Compute.
         if _tunnel_url and await _tunnel_alive(_tunnel_url, _tunnel_check_timeout):
             logger.info(f"Routing via SSH tunnel: {_tunnel_url}")
-            return await _route_via_direct(model, messages, stream, _tunnel_url, params)
-        elif _use_globus:
+
+            # Build the Globus fallback coroutine once so it can be reused
+            # whether the failure is detected before or mid-stream.
+            async def _globus_fallback():
+                return await _route_via_globus_compute(
+                    model,
+                    messages,
+                    stream,
+                    caller,
+                    _client,
+                    _relay_url,
+                    _relay_secret,
+                    _relay_enc_key,
+                    _endpoint_id,
+                    params,
+                )
+
+            try:
+                return await _route_via_direct(
+                    model,
+                    messages,
+                    stream,
+                    _tunnel_url,
+                    params,
+                    globus_fallback_fn=_globus_fallback if _use_globus else None,
+                )
+            except HTTPException as e:
+                # Tunnel failed before stream started (connect error / 503 / 504).
+                if _use_globus and e.status_code in (503, 504):
+                    logger.warning(f"SSH tunnel request failed ({e.status_code}); falling back to Globus Compute")
+                else:
+                    raise
+        if _use_globus:
             return await _route_via_globus_compute(
                 model,
                 messages,
@@ -473,7 +504,7 @@ async def _route_via_globus_compute_streaming(
     return StreamingResponse(sse_generator(), media_type="text/event-stream")
 
 
-async def _route_via_direct(model, messages, stream, direct_url, params):
+async def _route_via_direct(model, messages, stream, direct_url, params, globus_fallback_fn=None):
     # Forward all client params verbatim; the proxy only overrides the three
     # fields it owns. max_tokens defaults to 2048 when the client omits it.
     payload = {
@@ -504,11 +535,34 @@ async def _route_via_direct(model, messages, stream, direct_url, params):
                             async for line in resp.aiter_lines():
                                 if line.strip():
                                     yield line + "\n"
-                except httpx.ConnectError as e:
-                    raise HTTPException(
-                        status_code=503,
-                        detail=f"Cannot connect to vLLM. Is the tunnel running? Error: {e}",
-                    ) from e
+                except (httpx.ConnectError, httpx.RemoteProtocolError) as e:
+                    if globus_fallback_fn is not None:
+                        # SSH tunnel dropped mid-stream — transparently reroute.
+                        # The client has already received the SSE headers so we
+                        # splice the Globus stream in seamlessly.
+                        logger.warning(
+                            f"SSH tunnel lost during streaming ({type(e).__name__}); "
+                            "splicing in Globus Compute fallback"
+                        )
+                        try:
+                            fallback_resp = await globus_fallback_fn()
+                            if isinstance(fallback_resp, StreamingResponse):
+                                async for chunk in fallback_resp.body_iterator:
+                                    yield chunk
+                            else:
+                                yield f"data: {json.dumps(fallback_resp)}\n\n"
+                                yield "data: [DONE]\n\n"
+                        except Exception as fe:
+                            err = {
+                                "error": {"message": f"tunnel lost and fallback failed: {fe}", "type": "gateway_error"}
+                            }
+                            yield f"data: {json.dumps(err)}\n\n"
+                            yield "data: [DONE]\n\n"
+                    else:
+                        raise HTTPException(
+                            status_code=503,
+                            detail=f"Cannot connect to vLLM. Is the tunnel running? Error: {e}",
+                        ) from e
                 except httpx.TimeoutException as e:
                     raise HTTPException(status_code=504, detail="vLLM request timed out") from e
 
