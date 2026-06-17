@@ -277,6 +277,12 @@ See [docs/tutorial.ipynb](docs/tutorial.ipynb) for a zero-to-hero walkthrough fr
 - [streamrelay](https://github.com/uicacer/streamrelay) — WebSocket relay for real-time output streaming from Globus Compute
 - [STREAM](https://github.com/uicacer/STREAM) — Full tiered LLM routing system that uses hpc-as-api
 
+## Authors
+
+- **Anas Nassar** (nassar@uic.edu) — University of Illinois Chicago
+- **Chris Kanich** (ckanich@uic.edu) — University of Illinois Chicago
+- **Steve Mohr** (smohr@uic.edu) — University of Illinois Chicago
+
 ## License
 
 Apache 2.0 — see [LICENSE](LICENSE).
@@ -287,7 +293,7 @@ If you use hpc-as-api in research, please cite:
 
 ```bibtex
 @software{nassar2025hpcgateway,
-  author = {Nassar, Anas},
+  author = {Nassar, Anas and Kanich, Chris and Mohr, Steve},
   title  = {hpc-as-api: HTTP gateway for any HPC function via Globus Compute and WebSocket relay},
   year   = {2025},
   url    = {https://github.com/uicacer/hpc-as-api}
