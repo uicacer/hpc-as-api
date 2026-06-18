@@ -280,7 +280,6 @@ See [docs/tutorial.ipynb](docs/tutorial.ipynb) for a zero-to-hero walkthrough fr
 ## Authors
 
 - **Anas Nassar** (nassar@uic.edu) — University of Illinois Chicago
-- **Steve Mohr** (smohr@uic.edu) — University of Illinois Chicago
 
 ## License
 
@@ -292,7 +291,7 @@ If you use hpc-as-api in research, please cite:
 
 ```bibtex
 @software{nassar2025hpcgateway,
-  author = {Nassar, Anas and Mohr, Steve},
+  author = {Nassar, Anas},
   title  = {hpc-as-api: HTTP gateway for any HPC function via Globus Compute and WebSocket relay},
   year   = {2025},
   url    = {https://github.com/uicacer/hpc-as-api}
