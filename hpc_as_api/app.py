@@ -546,7 +546,7 @@ async def _route_via_direct(model, messages, stream, direct_url, params, globus_
                 last_seq: int = 0
                 done = False  # True only when we see "data: [DONE]" in the stream
                 attempt = 0
-                max_reconnect_attempts = 20  # ~20s of retries before giving up
+                max_reconnect_attempts = 120  # up to ~120s: covers autossh reconnect time
                 buf = b""  # accumulate bytes until we have complete SSE events
 
                 while not done:
