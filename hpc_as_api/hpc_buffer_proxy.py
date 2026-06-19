@@ -32,9 +32,9 @@ import uuid
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [buffer-proxy] %(levelname)s %(message)s",
+    format="%(asctime)s [hpc-buffer-proxy] %(levelname)s %(message)s",
 )
-log = logging.getLogger("buffer-proxy")
+log = logging.getLogger("hpc-buffer-proxy")
 
 VLLM_URL = os.environ.get("VLLM_URL", "http://127.0.0.1:8001")
 LISTEN_PORT = int(os.environ.get("BUFFER_PROXY_PORT", "8002"))
