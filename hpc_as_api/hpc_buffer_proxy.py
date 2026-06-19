@@ -122,7 +122,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
     # ── /health ──────────────────────────────────────────────────────────────
     def _handle_health(self):
         try:
-            with urllib.request.urlopen(f"{VLLM_URL}/health", timeout=2) as r:  # noqa: S310
+            with urllib.request.urlopen(f"{VLLM_URL}/health", timeout=2) as r:  # noqa: S310  # nosec B310
                 vllm_ok = r.status == 200
         except Exception:
             vllm_ok = False
@@ -191,14 +191,14 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
     def _run_vllm_job(self, job: JobBuffer, body: bytes):
         """Background thread: POST to vLLM, buffer every SSE chunk."""
         url = f"{VLLM_URL}/v1/chat/completions"
-        req = urllib.request.Request(  # noqa: S310
+        req = urllib.request.Request(  # noqa: S310  # nosec B310
             url,
             data=body,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=300) as resp:  # noqa: S310
+            with urllib.request.urlopen(req, timeout=300) as resp:  # noqa: S310  # nosec B310
                 if resp.status != 200:
                     err_body = resp.read().decode(errors="replace")
                     job.mark_done(error=f"vLLM {resp.status}: {err_body[:200]}")
@@ -250,14 +250,14 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
     def _forward_non_stream(self, body: bytes):
         """Pass-through for non-streaming requests."""
         url = f"{VLLM_URL}/v1/chat/completions"
-        req = urllib.request.Request(  # noqa: S310
+        req = urllib.request.Request(  # noqa: S310  # nosec B310
             url,
             data=body,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=300) as resp:  # noqa: S310
+            with urllib.request.urlopen(req, timeout=300) as resp:  # noqa: S310  # nosec B310
                 resp_body = resp.read()
                 self.send_response(resp.status)
                 self.send_header("Content-Type", "application/json")
