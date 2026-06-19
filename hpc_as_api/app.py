@@ -58,8 +58,26 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from websockets.asyncio.client import connect as ws_connect
 
-from hpc_as_api.auth import AuthConfig, Authenticator, CallerIdentity, validate_messages
-from hpc_as_api.crypto import decrypt_message
+# Shared persistent HTTP client reuses TCP connections across requests.
+# Per-request AsyncClient creation was the relay throughput bottleneck at >3.7 req/s,
+# because each request paid a full TCP handshake through the SSH tunnel.
+_SHARED_LIMITS = httpx.Limits(
+    max_connections=200,
+    max_keepalive_connections=100,
+    keepalive_expiry=60.0,
+)
+_shared_http_client: httpx.AsyncClient | None = None
+
+
+def _get_http_client() -> httpx.AsyncClient:
+    global _shared_http_client
+    if _shared_http_client is None or _shared_http_client.is_closed:
+        _shared_http_client = httpx.AsyncClient(timeout=120.0, limits=_SHARED_LIMITS)
+    return _shared_http_client
+
+
+from hpc_as_api.auth import AuthConfig, Authenticator, CallerIdentity, validate_messages  # noqa: E402
+from hpc_as_api.crypto import decrypt_message  # noqa: E402
 
 if TYPE_CHECKING:
     from hpc_as_api.compute import GlobusComputeClient
@@ -136,10 +154,10 @@ def make_app(
 
     _direct_url = direct_vllm_url or os.getenv("LAKESHORE_VLLM_ENDPOINT", "http://localhost:8000")
 
-    # When USE_GLOBUS_COMPUTE=true but a direct tunnel URL is configured,
-    # the proxy will auto-detect the tunnel on each request and prefer it when
-    # available, falling back to Globus Compute transparently.
-    _tunnel_url = os.getenv("LAKESHORE_VLLM_ENDPOINT", "") if _use_globus else ""
+    # Always track the tunnel URL for health reporting and direct routing.
+    # When USE_GLOBUS_COMPUTE=false the tunnel is the sole path, so we must
+    # still detect it. When true, the tunnel is preferred over Globus when alive.
+    _tunnel_url = os.getenv("LAKESHORE_VLLM_ENDPOINT", "")
     _tunnel_check_timeout = float(os.getenv("TUNNEL_CHECK_TIMEOUT", "1.0"))
 
     # Build the Authenticator from AuthConfig, Authenticator, or env vars.
@@ -348,9 +366,9 @@ def make_app(
 async def _tunnel_alive(tunnel_url: str, timeout: float = 1.0) -> bool:
     """Return True if the SSH tunnel endpoint is reachable and vLLM is healthy."""
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{tunnel_url}/health", timeout=timeout)
-            return resp.status_code == 200
+        client = _get_http_client()
+        resp = await client.get(f"{tunnel_url}/health", timeout=timeout)
+        return resp.status_code == 200
     except Exception:
         return False
 
@@ -519,64 +537,95 @@ async def _route_via_direct(model, messages, stream, direct_url, params, globus_
 
     try:
         if stream:
-            # The httpx client and response stream must remain open for the full
-            # duration of body iteration. Defining the generator with the client
-            # inside keeps both alive until the consumer is done.
+
             async def stream_generator():
-                try:
-                    async with httpx.AsyncClient(timeout=120.0) as _client:
-                        async with _client.stream("POST", target_url, json=payload) as resp:
+                job_id: str | None = None
+                last_seq: int = 0
+                attempt = 0
+                max_reconnect_attempts = 20  # ~20s of retries before giving up
+
+                while True:
+                    attempt += 1
+                    headers: dict[str, str] = {}
+                    if job_id is not None:
+                        # Resume an existing buffered job on the HPC proxy side.
+                        headers["X-Resume-Job"] = f"{job_id}:{last_seq}"
+                        logger.info(f"Reconnecting to buffer proxy, resuming job {job_id[:8]} from seq {last_seq}")
+
+                    try:
+                        _client = _get_http_client()
+                        async with _client.stream("POST", target_url, json=payload, headers=headers) as resp:
                             if resp.status_code != 200:
                                 error_text = await resp.aread()
                                 raise HTTPException(
                                     status_code=resp.status_code,
                                     detail=f"vLLM error: {error_text.decode()}",
                                 )
-                            # Forward raw bytes so SSE event delimiters (\n\n)
-                            # are preserved exactly as vLLM emits them.
+                            # Capture the job ID the buffer proxy assigned (first response only).
+                            if job_id is None:
+                                job_id = resp.headers.get("X-Job-ID")
+
                             async for chunk in resp.aiter_bytes():
+                                # Track sequence position from X-Seq-End trailer if present,
+                                # otherwise count newline-delimited SSE events we forwarded.
+                                last_seq += chunk.count(b"\n\n")
                                 yield chunk
-                except (httpx.ConnectError, httpx.RemoteProtocolError) as e:
-                    if globus_fallback_fn is not None:
-                        # SSH tunnel dropped mid-stream — transparently reroute.
-                        # The client has already received the SSE headers so we
-                        # splice the Globus stream in seamlessly.
-                        logger.warning(
-                            f"SSH tunnel lost during streaming ({type(e).__name__}); "
-                            "splicing in Globus Compute fallback"
-                        )
-                        try:
-                            fallback_resp = await globus_fallback_fn()
-                            if isinstance(fallback_resp, StreamingResponse):
-                                async for chunk in fallback_resp.body_iterator:
-                                    yield chunk
+
+                        # Clean completion — exit loop.
+                        return
+
+                    except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError) as e:
+                        if attempt >= max_reconnect_attempts:
+                            logger.error(f"Buffer proxy unreachable after {attempt} attempts: {e}")
+                            if globus_fallback_fn is not None:
+                                logger.warning("Falling back to Globus Compute after repeated tunnel failures")
+                                try:
+                                    fallback_resp = await globus_fallback_fn()
+                                    if isinstance(fallback_resp, StreamingResponse):
+                                        async for chunk in fallback_resp.body_iterator:
+                                            yield chunk
+                                    else:
+                                        yield f"data: {json.dumps(fallback_resp)}\n\n"
+                                        yield "data: [DONE]\n\n"
+                                except Exception as fe:
+                                    err = {
+                                        "error": {
+                                            "message": f"tunnel lost and fallback failed: {fe}",
+                                            "type": "gateway_error",
+                                        }
+                                    }
+                                    yield f"data: {json.dumps(err)}\n\n"
+                                    yield "data: [DONE]\n\n"
                             else:
-                                yield f"data: {json.dumps(fallback_resp)}\n\n"
+                                err = {
+                                    "error": {
+                                        "message": "tunnel lost; buffer proxy unreachable",
+                                        "type": "gateway_error",
+                                    }
+                                }
+                                yield f"data: {json.dumps(err)}\n\n"
                                 yield "data: [DONE]\n\n"
-                        except Exception as fe:
-                            err = {
-                                "error": {"message": f"tunnel lost and fallback failed: {fe}", "type": "gateway_error"}
-                            }
-                            yield f"data: {json.dumps(err)}\n\n"
-                            yield "data: [DONE]\n\n"
-                    else:
-                        raise HTTPException(
-                            status_code=503,
-                            detail=f"Cannot connect to vLLM. Is the tunnel running? Error: {e}",
-                        ) from e
-                except httpx.TimeoutException as e:
-                    raise HTTPException(status_code=504, detail="vLLM request timed out") from e
+                            return
+
+                        # Tunnel is reconnecting — wait briefly then retry.
+                        # The client SSE connection stays open the whole time.
+                        wait = min(0.2 * attempt, 2.0)
+                        logger.warning(f"Tunnel lost ({type(e).__name__}), attempt {attempt}, retrying in {wait:.1f}s")
+                        await asyncio.sleep(wait)
+
+                    except httpx.TimeoutException as e:
+                        raise HTTPException(status_code=504, detail="vLLM request timed out") from e
 
             return StreamingResponse(stream_generator(), media_type="text/event-stream")
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(target_url, json=payload)
-            if response.status_code != 200:
-                raise HTTPException(
-                    status_code=response.status_code,
-                    detail=f"vLLM error: {response.text}",
-                )
-            return response.json()
+        client = _get_http_client()
+        response = await client.post(target_url, json=payload)
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"vLLM error: {response.text}",
+            )
+        return response.json()
 
     except httpx.ConnectError as e:
         raise HTTPException(

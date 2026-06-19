@@ -588,7 +588,7 @@ wheels = [
 
 [[package]]
 name = "hpc-as-api"
-version = "0.5.0"
+version = "0.5.11"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },

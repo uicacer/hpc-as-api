@@ -304,11 +304,8 @@ echo "=========================================="
 source /etc/profile
 module load apptainer
 
-export CUDA_VISIBLE_DEVICES=0,1
 export HF_HOME="${PROJECT_DIR}/huggingface"
 export HF_TOKEN=$(cat "${PROJECT_DIR}/.hf_token")
-export NCCL_P2P_DISABLE=0
-export NCCL_SHM_DISABLE=0
 
 CHAT_TEMPLATE="/vllm-workspace/examples/tool_chat_template_gemma4.jinja"
 

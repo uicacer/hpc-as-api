@@ -2,9 +2,68 @@
 
 **Prerequisites:** SSH access to Lakeshore, HuggingFace account.
 
-**Storage layout (quick reminder):**
-- Model weights → `/projects/acer_hpc_admin/nassar/huggingface/` (persists across jobs; shared project storage, not home dir)
-- vLLM container (Apptainer SIF) → `/projects/acer_hpc_admin/nassar/containers/vllm-0.23.0` — pinned version with all CUDA deps; Docker is not available on Lakeshore (no root), so we use Apptainer
+**Storage layout:**
+- Model weights → `/projects/acer_hpc_admin/<username>/huggingface/`
+- vLLM container → `/projects/acer_hpc_admin/<username>/containers/vllm-0.23.0`
+- SLURM scripts → `~/STREAM/scripts/`
+- Logs → `~/STREAM/scripts/logs/` and `/projects/acer_hpc_admin/<username>/logs/`
+
+---
+
+## Step 0 — Pull the vLLM container
+
+This only needs to be done once per account. The container is an Apptainer sandbox built from the official vLLM Docker image.
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=pull-vllm-0.23.0
+#SBATCH --partition=batch_gpu
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --time=02:00:00
+#SBATCH --output=/projects/acer_hpc_admin/<username>/logs/pull-vllm-0.23.0-%j.log
+
+source /etc/profile
+module load apptainer
+
+CONTAINER_DIR="/projects/acer_hpc_admin/<username>/containers"
+TARGET="${CONTAINER_DIR}/vllm-0.23.0"
+
+if [ -d "${TARGET}" ]; then
+    echo "Container already exists at ${TARGET} — exiting."
+    exit 0
+fi
+
+echo "============================================"
+echo "Pulling vLLM v0.23.0 from Docker Hub"
+echo "Target: ${TARGET}"
+echo "Started: $(date)"
+echo "============================================"
+
+apptainer build --sandbox "${TARGET}" docker://vllm/vllm-openai:v0.23.0
+
+EXIT_CODE=$?
+
+if [ $EXIT_CODE -eq 0 ]; then
+    echo "PULL SUCCESSFUL — $(date)"
+    apptainer exec "${TARGET}" python3 -c "import vllm; print('vLLM version:', vllm.__version__)"
+else
+    echo "PULL FAILED (exit code: ${EXIT_CODE}) — $(date)"
+    rm -rf "${TARGET}"
+fi
+```
+
+**Why v0.23.0?** It's the first release with correct Gemma 4 support: MTP speculative decoding, tool parser fixes, and Model Runner V2 Gemma 4 support. Use this version or newer.
+
+```bash
+mkdir -p /projects/acer_hpc_admin/<username>/logs
+mkdir -p /projects/acer_hpc_admin/<username>/containers
+sbatch ~/STREAM/scripts/pull-vllm-0.23.0.sh
+tail -f /projects/acer_hpc_admin/<username>/logs/pull-vllm-0.23.0-JOBID.log
+# Wait for: "PULL SUCCESSFUL" and the version line
+# Takes ~1–2 hours
+```
 
 ---
 
@@ -17,11 +76,11 @@ Some models (e.g. Llama) are gated; others (e.g. Gemma 4) are open.
 
 ## Step 2 — Store your HuggingFace token
 
-On the Lakeshore login node (`ssh YOUR_NETID@lakeshore.acer.uic.edu`):
+On the Lakeshore login node (`ssh <username>@lakeshore.acer.uic.edu`):
 
 ```bash
-echo "hf_your_token_here" > /projects/acer_hpc_admin/nassar/.hf_token  # save token to a private file
-chmod 600 /projects/acer_hpc_admin/nassar/.hf_token                    # restrict to your user only
+echo "hf_your_token_here" > /projects/acer_hpc_admin/<username>/.hf_token
+chmod 600 /projects/acer_hpc_admin/<username>/.hf_token
 ```
 
 Get your token at: huggingface.co → Settings → Access Tokens (read scope is enough).
@@ -30,39 +89,43 @@ Get your token at: huggingface.co → Settings → Access Tokens (read scope is 
 
 ## Step 3 — Download the model weights
 
-Create `~/STREAM/scripts/download-MODELNAME.sh` and submit it:
+This is the exact script used to download Gemma 4. Copy it, change the model ID, local-dir path, and job name for your model:
 
 ```bash
 #!/bin/bash
-#SBATCH --job-name=download-model      # name shown in squeue
-#SBATCH --partition=batch              # CPU-only nodes — no GPU needed for download
-#SBATCH --cpus-per-task=4              # parallel download threads
-#SBATCH --mem=16G                      # memory for the download process
-#SBATCH --time=02:00:00                # max runtime — 2h is enough for ~60GB
-#SBATCH --output=/projects/acer_hpc_admin/nassar/logs/download-%j.out  # log file (%j = job ID)
+# #SBATCH lines are instructions to SLURM, not shell comments.
+# SLURM reads them before the job starts; bash ignores them during execution.
+#SBATCH --job-name=download-gemma4       # name shown in squeue; change to match your model
+#SBATCH --partition=batch                # CPU-only nodes; no GPU needed for downloading
+#SBATCH --ntasks=1                       # one process (huggingface-cli is single-process)
+#SBATCH --cpus-per-task=4               # huggingface-cli downloads in parallel threads; more = faster
+#SBATCH --mem=16G                        # download uses ~1-2 GB; 16G is a safe buffer
+#SBATCH --time=02:00:00                  # 2 hours is enough for ~66 GB at cluster network speeds
+#SBATCH --output=/projects/acer_hpc_admin/<username>/logs/download-gemma4-%j.out  # %j = job ID
 
-MODEL_ID="google/gemma-4-31B-it"           # ← change this to your model's HuggingFace ID
-PROJECT_DIR="/projects/acer_hpc_admin/nassar"
-CONTAINER="${PROJECT_DIR}/containers/vllm-0.23.0"  # container that has huggingface-cli
+# Make the apptainer command available on this compute node.
+module load apptainer
 
-source /etc/profile       # initialize the module system (required in SLURM batch jobs)
-module load apptainer     # make the apptainer command available
+# Tell HuggingFace where to store files.
+# Never use $HOME — home directory quota is only 100 GiB; the model alone is ~66 GiB.
+export HF_HOME=/projects/acer_hpc_admin/<username>/huggingface
 
-export HF_HOME="${PROJECT_DIR}/huggingface"          # where weights are saved on disk
-export HF_TOKEN=$(cat "${PROJECT_DIR}/.hf_token")    # read token from the file saved in Step 2
-
+# Run huggingface-cli inside the vLLM container (huggingface_hub is installed inside it).
+# --env HF_HOME passes the variable into the isolated container environment.
+# --local-dir saves files to a path matching HuggingFace's cache layout (required by vLLM).
 apptainer exec \
-    --env HF_HOME="${HF_HOME}" \         # pass HF_HOME into the container
-    --env HF_TOKEN="${HF_TOKEN}" \       # pass token into the container
-    "${CONTAINER}" \                     # run inside the vLLM container
-    huggingface-cli download "${MODEL_ID}"  # download all model files to HF_HOME
+    --env HF_HOME=${HF_HOME} \
+    /projects/acer_hpc_admin/<username>/containers/vllm-0.23.0 \
+    huggingface-cli download \
+        google/gemma-4-31B-it \
+        --local-dir ${HF_HOME}/hub/models--google--gemma-4-31B-it
 
 echo "Download complete: $(date)"
 ```
 
 ```bash
-sbatch ~/STREAM/scripts/download-MODELNAME.sh              # submit the job
-tail -f /projects/acer_hpc_admin/nassar/logs/download-JOBID.out  # watch progress
+sbatch ~/STREAM/scripts/download-gemma4.sh
+tail -f /projects/acer_hpc_admin/<username>/logs/download-gemma4-JOBID.out
 # Wait for: "Download complete"
 ```
 
@@ -70,69 +133,116 @@ tail -f /projects/acer_hpc_admin/nassar/logs/download-JOBID.out  # watch progres
 
 ## Step 4 — Start vLLM on ga-002
 
-Create `~/STREAM/scripts/vllm-MODELNAME.sh`. Change `MODEL`, `PORT`,
-`--served-model-name`, and `--tool-call-parser` / `--chat-template` if the
-model family differs from Gemma 4.
+This is the exact production script currently running Gemma 4. Copy it and adjust `MODEL`, `PORT`, `--served-model-name`, and the chat template for your model:
 
 ```bash
 #!/bin/bash
-#SBATCH --job-name=MODELNAME           # name shown in squeue
-#SBATCH --partition=batch_gpuapi       # GPU partition for ga-002
-#SBATCH --account=ts_acer              # required billing account for batch_gpuapi
-#SBATCH --nodelist=ga-002              # pin to this specific GPU node
-#SBATCH --gres=gpu:2                   # request both A100 GPUs (needed for 128K context)
-#SBATCH --cpus-per-task=8              # CPU cores for the vLLM process
-#SBATCH --mem=80G                      # system RAM for model loading and workers
-#SBATCH --time=48:00:00                # keep running for 48 hours
-#SBATCH --output=logs/%x-%j.log        # log file (%x = job name, %j = job ID)
+#SBATCH --job-name=gemma4-ga002          # name shown in squeue
+#SBATCH --partition=batch_gpuapi         # GPU partition for ga-002; requires --account=ts_acer
+#SBATCH --account=ts_acer                # billing account — only Anas and Steve have access
+#SBATCH --nodelist=ga-002                # pin to ga-002; Globus workers also run here, reach vLLM via 127.0.0.1
+#SBATCH --gres=gpu:2                     # both A100s; 1 GPU gives only ~18 GiB KV cache (~16K context)
+#SBATCH --cpus-per-task=4                # CPU cores for vLLM HTTP server, tokenizer, scheduling loop
+#SBATCH --mem=80G                        # system RAM for weight loading and worker buffers
+#SBATCH --time=48:00:00                  # resubmit before expiry to avoid downtime
+#SBATCH --output=logs/%x-%j.log          # %x = job name, %j = job ID; logs go to ~/STREAM/scripts/logs/
 
-MODEL="google/gemma-4-31B-it"              # ← HuggingFace model ID (used to load weights)
-PORT=8001                                   # ← change if running a second model on the same node
-PROJECT_DIR="/projects/acer_hpc_admin/nassar"
-CONTAINER="${PROJECT_DIR}/containers/vllm-0.23.0"  # pinned container version
+# =============================================================================
+# Memory budget (tensor-parallel-size 2, gpu-memory-utilization 0.90):
+#   Total VRAM (2x A100):     160.0 GiB
+#   vLLM budget (0.90):       144.0 GiB
+#   Weights (BF16, TP2):       ~62   GiB
+#   KV cache available:        ~82   GiB  -> 128K context
+#   Reserved (PyTorch/NCCL):   ~16   GiB
+#
+# IF OOM AT STARTUP (step down in order):
+#   1. --gpu-memory-utilization 0.88  (do NOT reduce --max-model-len)
+#   2. --max-num-seqs 64
+#   3. --enforce-eager
+# =============================================================================
+
+MODEL="google/gemma-4-31B-it"
+PORT=8001
+PROJECT_DIR="/projects/acer_hpc_admin/<username>"
+CONTAINER="${PROJECT_DIR}/containers/vllm-0.23.0"
 
 echo "=========================================="
-echo "vLLM: ${MODEL} | Job: $SLURM_JOB_ID | Node: $SLURM_NODELIST"
+echo "vLLM: ${MODEL}"
+echo "Job ID: $SLURM_JOB_ID | Node: $SLURM_NODELIST"
 echo "Started: $(date)"
 echo "=========================================="
 
-source /etc/profile       # initialize the module system (required in SLURM batch jobs)
-module load apptainer     # make the apptainer command available
+# Initialize the module system. Required in SLURM batch jobs — they run as
+# non-login shells and don't load /etc/profile automatically.
+source /etc/profile
+module load apptainer
 
-export CUDA_VISIBLE_DEVICES=0,1    # use both GPUs on ga-002
-export HF_HOME="${PROJECT_DIR}/huggingface"          # where weights are stored
-export HF_TOKEN=$(cat "${PROJECT_DIR}/.hf_token")    # HuggingFace token for gated models
-export NCCL_P2P_DISABLE=0          # enable direct GPU-to-GPU communication via NVLink
-export NCCL_SHM_DISABLE=0          # enable shared memory transport between GPUs
+export HF_HOME="${PROJECT_DIR}/huggingface"
+export HF_TOKEN=$(cat "${PROJECT_DIR}/.hf_token")
 
-apptainer exec --nv \               # --nv: pass GPUs into the container
-    --no-home \                     # don't mount home dir (keeps container isolated)
-    --env PYTHONNOUSERSITE=1 \      # ignore user's local Python packages inside container
+NODE_IP=$(hostname -I | awk '{print $1}')
+echo "Service: http://${NODE_IP}:${PORT}"
+
+# Gemma 4's default chat template does not activate tool-calling.
+# vLLM ships a dedicated jinja template that wires up function-call tokens.
+# Without this, --enable-auto-tool-choice has no effect.
+# The path is inside the container (vllm-workspace = vLLM's source tree in the SIF).
+CHAT_TEMPLATE="/vllm-workspace/examples/tool_chat_template_gemma4.jinja"
+
+# --nv: expose GPUs inside the container (required for CUDA)
+# --no-home: don't mount home dir — keeps container isolated
+# --env PYTHONNOUSERSITE=1: ignore user's local Python packages inside container
+# --host 127.0.0.1: loopback only — vLLM not exposed to other cluster users;
+#   Globus workers are pinned to ga-002 and connect via 127.0.0.1
+# --tensor-parallel-size 2: split weights across 2 GPUs via NVLink
+# --max-model-len 131072: 128K context window — do not reduce, hard requirement
+# --gpu-memory-utilization 0.90: reserve 90% of VRAM for weights + KV cache
+# --max-num-seqs 128: max concurrent requests in flight
+# --dtype auto: auto-select best dtype — BF16 on A100
+# --enable-prefix-caching: cache repeated system prompts — free speedup
+# --enable-chunked-prefill: interleave prefill and decode — better concurrency
+# --enable-auto-tool-choice: OpenAI-compatible parallel tool/function calling
+# --tool-call-parser gemma4: parse Gemma 4's tool-call format → OpenAI format
+# --reasoning-parser gemma4: expose <think>...</think> as reasoning_content field
+# --chat-template: required for tool calling — see note above
+# --limit-mm-per-prompt: disable image/audio — text-only deployment
+# --async-scheduling: decouple scheduling from GPU loop — better concurrency
+# --served-model-name: alias clients use in "model": "gemma4-31b";
+#   must match hf_name in proxy-env on the relay VM
+apptainer exec \
+    --nv \
+    --no-home \
+    --env PYTHONNOUSERSITE=1 \
     "${CONTAINER}" \
     vllm serve "${MODEL}" \
-    --host 127.0.0.1 \              # loopback only — no other cluster node can reach this port
+    --host 127.0.0.1 \
     --port "${PORT}" \
-    --tensor-parallel-size 2 \      # split model across 2 GPUs via NVLink
-    --max-model-len 131072 \        # 128K context window (131072 = 128 × 1024) — do not reduce
-    --gpu-memory-utilization 0.92 \ # reserve 92% of VRAM for weights + KV cache
-    --max-num-seqs 128 \            # max concurrent requests
-    --dtype auto \                  # auto-select best dtype (BF16 on A100)
-    --enable-prefix-caching \       # cache repeated system prompts — free speedup
-    --enable-chunked-prefill \      # interleave prefill and decode for better throughput
-    --enable-auto-tool-choice \     # enable OpenAI-compatible tool/function calling
-    --tool-call-parser gemma4 \     # parse Gemma 4's tool-call format → OpenAI format
-    --reasoning-parser gemma4 \     # expose <think>...</think> as reasoning_content field
-    --chat-template /vllm-workspace/examples/tool_chat_template_gemma4.jinja \  # required for tool calling to work
-    --served-model-name gemma4-31b  # ← the alias clients use in "model": "gemma4-31b"
+    --tensor-parallel-size 2 \
+    --max-model-len 131072 \
+    --gpu-memory-utilization 0.90 \
+    --max-num-seqs 128 \
+    --dtype auto \
+    --enable-prefix-caching \
+    --enable-chunked-prefill \
+    --enable-auto-tool-choice \
+    --tool-call-parser gemma4 \
+    --reasoning-parser gemma4 \
+    --chat-template "${CHAT_TEMPLATE}" \
+    --limit-mm-per-prompt '{"image": 0, "audio": 0}' \
+    --async-scheduling \
+    --served-model-name gemma4-31b
 
 echo "Service stopped: $(date)"
 ```
 
 ```bash
-sbatch ~/STREAM/scripts/vllm-MODELNAME.sh         # submit the job
-squeue -u nassar                                   # confirm STATE=RUNNING on ga-002
-tail -f ~/STREAM/scripts/logs/MODELNAME-JOBID.log  # watch startup log
-# Wait for: "Application startup complete."        # first run ~15min, restarts ~5min
+cd ~/STREAM/scripts
+sbatch vllm-gemma4-ga002.sh
+squeue -u <username>                     # confirm STATE=RUNNING on ga-002
+tail -f logs/gemma4-ga002-JOBID.log
+# Wait for: "Application startup complete."
+# First run: ~15 min (torch.compile from scratch)
+# Subsequent restarts: ~5 min (compile cache hit)
 ```
 
 ---
@@ -141,31 +251,31 @@ tail -f ~/STREAM/scripts/logs/MODELNAME-JOBID.log  # watch startup log
 
 Once you see `Application startup complete.` in the log, send Anas:
 
-1. The **model alias** you used in `--served-model-name` (e.g. `gemma4-31b`)
+1. The **model alias** used in `--served-model-name` (e.g. `gemma4-31b`)
 2. The **port** (e.g. `8001`)
 
-**Anas will do the rest** — register the model in the gateway and restart the
-service. This takes about 2 minutes on his side.
+**Anas will do the rest** — register the model in the gateway and restart the service. This takes about 2 minutes on his side.
 
 ---
 
-## Step 6 — (Anas only) Register in the gateway
+## Step 6 — (Anas only) Register the model on the proxy/relay VM
 
 ```bash
-ssh stream-relay                       # SSH to the relay VM
-sudo nano /home/ubuntu/proxy-env       # edit the gateway config
+ssh stream-relay
+sudo nano /home/ubuntu/proxy-env
 ```
 
 Add the new model to `HPC_MODELS` — must be a **single JSON line, no newlines**:
 
 ```bash
 HPC_MODELS={..., "YOUR-ALIAS": {"hf_name": "YOUR-ALIAS", "url": "http://127.0.0.1:PORT", "context_reserve_output": 8192}}
-#                               ^ must match --served-model-name   ^ loopback: Globus workers run on ga-002
 ```
 
+`hf_name` must exactly match `--served-model-name`. `url` uses `127.0.0.1` because Globus workers are pinned to ga-002 and connect via loopback.
+
 ```bash
-sudo systemctl restart stream-proxy         # apply the new config
-sudo systemctl status stream-proxy          # must show "active (running)"
+sudo systemctl restart stream-proxy
+sudo systemctl status stream-proxy   # must show "active (running)"
 ```
 
 ---
@@ -173,7 +283,9 @@ sudo systemctl status stream-proxy          # must show "active (running)"
 ## Step 7 — Verify end-to-end
 
 ```bash
-# List models — your alias should appear
+export API_KEY="your-key-here"
+
+# List models
 curl https://relay.stream.acer.uic.edu:8001/v1/models \
   -H "Authorization: Bearer $API_KEY" | python3 -m json.tool
 
@@ -181,19 +293,7 @@ curl https://relay.stream.acer.uic.edu:8001/v1/models \
 curl -X POST https://relay.stream.acer.uic.edu:8001/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model": "YOUR-ALIAS",
+  -d '{"model": "gemma4-31b",
        "messages": [{"role": "user", "content": "Say hello."}],
        "max_tokens": 50, "stream": false}' | python3 -m json.tool
 ```
-
----
-
-## Reference — Current models
-
-| Alias | Model | Node | Context | Status |
-|-------|-------|------|---------|--------|
-| `gemma4-31b` | google/gemma-4-31B-it | ga-002 (2× A100 80GB) | 128K | **Online** |
-| `qwen25-vl-72b` | Qwen/Qwen2.5-VL-72B-Instruct-AWQ | ghi2-002 (H100 NVL) | 64K | Offline (SLURM job not running) |
-
-For full details, troubleshooting, and memory budgets see
-[adding-a-new-model.md](adding-a-new-model.md).
