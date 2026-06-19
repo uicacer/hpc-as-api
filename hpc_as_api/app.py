@@ -540,15 +540,19 @@ async def _route_via_direct(model, messages, stream, direct_url, params, globus_
 
             async def stream_generator():
                 job_id: str | None = None
+                # seq counts complete SSE events (each "data: ...\n\n" block = 1 event).
+                # The buffer proxy assigns seq per stored chunk; we mirror that count
+                # so X-Resume-Job carries the right offset on reconnect.
                 last_seq: int = 0
+                done = False  # True only when we see "data: [DONE]" in the stream
                 attempt = 0
                 max_reconnect_attempts = 20  # ~20s of retries before giving up
+                buf = b""  # accumulate bytes until we have complete SSE events
 
-                while True:
+                while not done:
                     attempt += 1
                     headers: dict[str, str] = {}
                     if job_id is not None:
-                        # Resume an existing buffered job on the HPC proxy side.
                         headers["X-Resume-Job"] = f"{job_id}:{last_seq}"
                         logger.info(f"Reconnecting to buffer proxy, resuming job {job_id[:8]} from seq {last_seq}")
 
@@ -561,18 +565,26 @@ async def _route_via_direct(model, messages, stream, direct_url, params, globus_
                                     status_code=resp.status_code,
                                     detail=f"vLLM error: {error_text.decode()}",
                                 )
-                            # Capture the job ID the buffer proxy assigned (first response only).
                             if job_id is None:
                                 job_id = resp.headers.get("X-Job-ID")
 
                             async for chunk in resp.aiter_bytes():
-                                # Track sequence position from X-Seq-End trailer if present,
-                                # otherwise count newline-delimited SSE events we forwarded.
-                                last_seq += chunk.count(b"\n\n")
-                                yield chunk
+                                buf += chunk
+                                # Flush complete SSE events (terminated by \n\n) to the client.
+                                # Count each flushed event so last_seq matches buffer proxy's seq.
+                                while b"\n\n" in buf:
+                                    event, buf = buf.split(b"\n\n", 1)
+                                    event_bytes = event + b"\n\n"
+                                    if b"[DONE]" in event_bytes:
+                                        done = True
+                                    yield event_bytes
+                                    if not done:
+                                        last_seq += 1
 
-                        # Clean completion — exit loop.
-                        return
+                        # aiter_bytes ended — either [DONE] was seen (good) or tunnel
+                        # dropped mid-stream (clean TCP close, no exception).
+                        if not done:
+                            raise httpx.ReadError("stream ended before [DONE]", request=None)
 
                     except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError) as e:
                         if attempt >= max_reconnect_attempts:
@@ -609,12 +621,16 @@ async def _route_via_direct(model, messages, stream, direct_url, params, globus_
 
                         # Tunnel is reconnecting — wait briefly then retry.
                         # The client SSE connection stays open the whole time.
-                        wait = min(0.2 * attempt, 2.0)
-                        logger.warning(f"Tunnel lost ({type(e).__name__}), attempt {attempt}, retrying in {wait:.1f}s")
+                        wait = min(0.1 * attempt, 1.0)
+                        logger.warning(f"Tunnel lost ({type(e).__name__}), attempt {attempt}, retrying in {wait:.2f}s")
                         await asyncio.sleep(wait)
 
                     except httpx.TimeoutException as e:
                         raise HTTPException(status_code=504, detail="vLLM request timed out") from e
+
+                    else:
+                        # Successful connection — reset attempt counter for next potential drop.
+                        attempt = 0
 
             return StreamingResponse(stream_generator(), media_type="text/event-stream")
 
