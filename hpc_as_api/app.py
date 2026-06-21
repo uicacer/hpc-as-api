@@ -76,12 +76,6 @@ def _get_http_client() -> httpx.AsyncClient:
     return _shared_http_client
 
 
-# Tunnel status cache: avoid hitting the tunnel on every request.
-# Re-check at most once every TUNNEL_CACHE_TTL seconds.
-_tunnel_cache: dict[str, tuple[bool, float]] = {}  # url -> (alive, checked_at)
-TUNNEL_CACHE_TTL = 5.0  # seconds
-
-
 from hpc_as_api.auth import AuthConfig, Authenticator, CallerIdentity, validate_messages  # noqa: E402
 from hpc_as_api.crypto import decrypt_message  # noqa: E402
 
@@ -308,9 +302,12 @@ def make_app(
             f"Chat request: caller={caller.log_safe_id()}, model={model}, messages={len(messages)}, stream={stream}"
         )
 
-        # Auto-detect SSH tunnel: if a tunnel URL is configured and reachable,
-        # use it directly (low latency). Otherwise fall back to Globus Compute.
-        if _tunnel_url and await _tunnel_alive(_tunnel_url, _tunnel_check_timeout):
+        # When Globus is disabled there is only one path: the SSH tunnel.
+        # Skip the liveness check entirely — it adds an SSH round-trip to every
+        # request's TTFT for no benefit when there is no fallback to switch to.
+        # When Globus IS enabled, check liveness to decide which path to use.
+        _tunnel_ready = _tunnel_url and (not _use_globus or await _tunnel_alive(_tunnel_url, _tunnel_check_timeout))
+        if _tunnel_ready:
             logger.info(f"Routing via SSH tunnel: {_tunnel_url}")
 
             # Build the Globus fallback coroutine once so it can be reused
@@ -372,26 +369,16 @@ def make_app(
 async def _tunnel_alive(tunnel_url: str, timeout: float = 1.0) -> bool:
     """Return True if the SSH tunnel endpoint is reachable and vLLM is healthy.
 
-    Result is cached for TUNNEL_CACHE_TTL seconds to avoid a round-trip through
-    the SSH tunnel on every single inference request (which added ~500-800ms to TTFT).
+    Only called when USE_GLOBUS_COMPUTE=true, to decide whether to use the
+    tunnel or fall back to Globus. When Globus is disabled the tunnel check
+    is skipped entirely (no point paying an SSH round-trip per request).
     """
-    import time as _time
-
-    cached = _tunnel_cache.get(tunnel_url)
-    if cached is not None:
-        alive, checked_at = cached
-        if _time.monotonic() - checked_at < TUNNEL_CACHE_TTL:
-            return alive
-
     try:
         client = _get_http_client()
         resp = await client.get(f"{tunnel_url}/health", timeout=timeout)
-        alive = resp.status_code == 200
+        return resp.status_code == 200
     except Exception:
-        alive = False
-
-    _tunnel_cache[tunnel_url] = (alive, _time.monotonic())
-    return alive
+        return False
 
 
 # ---------------------------------------------------------------------------
