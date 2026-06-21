@@ -76,6 +76,12 @@ def _get_http_client() -> httpx.AsyncClient:
     return _shared_http_client
 
 
+# Tunnel status cache: avoid hitting the tunnel on every request.
+# Re-check at most once every TUNNEL_CACHE_TTL seconds.
+_tunnel_cache: dict[str, tuple[bool, float]] = {}  # url -> (alive, checked_at)
+TUNNEL_CACHE_TTL = 5.0  # seconds
+
+
 from hpc_as_api.auth import AuthConfig, Authenticator, CallerIdentity, validate_messages  # noqa: E402
 from hpc_as_api.crypto import decrypt_message  # noqa: E402
 
@@ -364,13 +370,28 @@ def make_app(
 
 
 async def _tunnel_alive(tunnel_url: str, timeout: float = 1.0) -> bool:
-    """Return True if the SSH tunnel endpoint is reachable and vLLM is healthy."""
+    """Return True if the SSH tunnel endpoint is reachable and vLLM is healthy.
+
+    Result is cached for TUNNEL_CACHE_TTL seconds to avoid a round-trip through
+    the SSH tunnel on every single inference request (which added ~500-800ms to TTFT).
+    """
+    import time as _time
+
+    cached = _tunnel_cache.get(tunnel_url)
+    if cached is not None:
+        alive, checked_at = cached
+        if _time.monotonic() - checked_at < TUNNEL_CACHE_TTL:
+            return alive
+
     try:
         client = _get_http_client()
         resp = await client.get(f"{tunnel_url}/health", timeout=timeout)
-        return resp.status_code == 200
+        alive = resp.status_code == 200
     except Exception:
-        return False
+        alive = False
+
+    _tunnel_cache[tunnel_url] = (alive, _time.monotonic())
+    return alive
 
 
 # ---------------------------------------------------------------------------

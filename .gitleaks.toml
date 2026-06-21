@@ -37,3 +37,7 @@ regexes = [
 [[allowlists]]
 description = "Rotated key in benchmarks/TUNING.md (commit bffd755) — already revoked, benchmarks folder removed"
 commits = ["bffd7554550cbed3c94dc582e77e72b8868d2435"]
+
+[[allowlists]]
+description = "Tutorial notebook accidentally committed then immediately reverted (7d3fee3) — bench keys already cycled"
+commits = ["3a7c7c0f1fd218283fd1bcfdf9ff19f77d9c8a35"]
