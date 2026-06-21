@@ -190,71 +190,20 @@ provided in `docs/deployment.md`.
 
 # Performance
 
-We benchmarked `hpc-as-api` against gemma4-31b (google/gemma-4-31B-it, int8 per-channel
-weight-only quantization, tensor-parallel across 2× NVIDIA A100 80GB SXM4, MTP-4
-speculative decoding) on the UIC Lakeshore HPC cluster (node ga-002). The full stack
-routes requests through an HTTPS relay and persistent SSH tunnel into vLLM. We compare
-direct vLLM access (B2) with the complete production path (B3) using a 500-prompt diverse
-dataset (average 136 input / 380 output tokens, Poisson arrivals, ≥120 s and ≥200
-requests per QPS level).
+Deployed in the STREAM system [@nassar2026stream] at the University of Illinois Chicago
+against a Qwen 2.5 72B AWQ model on an NVIDIA H100 NVL GPU on the Lakeshore HPC cluster
+(50-run medians):
 
-**Relay overhead.** The SSH tunnel + relay path adds a constant **~250–300 ms** to TTFT
-at every load level. This overhead is independent of GPU utilization:
+| Metric | Value |
+|---|---|
+| Median time-to-first-token (relay streaming, steady state) | **0.60 s** ± 0.20 s |
+| Median end-to-end latency (batch, warm cache) | **11.17 s** ± 2.0 s |
+| Throughput | ~25 tok/s (vLLM with `--enforce-eager` on CUDA 12.4) |
 
-| QPS (req/s) | Direct GPU TTFT p50 | Full Stack TTFT p50 | Overhead |
-|-------------|---------------------|---------------------|----------|
-| 1 | 104 ms | 358 ms | +254 ms |
-| 3 | 126 ms | 387 ms | +261 ms |
-| 6 | 486 ms | 786 ms | +300 ms |
-
-**Capacity.** Both paths sustain clean traffic (0% errors, p95 < 1 s) through high QPS:
-direct GPU operates cleanly to 7 req/s (p95 = 766 ms); the full stack operates cleanly to
-6 req/s (p95 = 1,020 ms). The full-stack capacity loss relative to direct GPU is ≤15%.
-At the 6 req/s full-stack operating point, Little's Law gives a simultaneous user capacity
-of 360 users at 1 message/minute or 90 users at 4 messages/minute.
-
-**Throughput ceiling.** Peak aggregate output throughput is ~2,080 tok/s (direct GPU) and
-~2,100 tok/s (full stack), confirming that the relay and SSH tunnel are not throughput
-bottlenecks — the GPU is.
-
-**Long-context behavior.** With 1380-token inputs (B4), both paths collapse rapidly: TTFT
-p50 jumps from ~600 ms at 1 req/s to ~5,000 ms at 2 req/s as KV cache pressure fills the
-vLLM prefill queue. The full-stack path shows total failure (100% errors) at ≥5 req/s;
-direct GPU degrades more gracefully but still accumulates 48% errors at 5 req/s. This is
-a hardware memory constraint, not a software or network limitation.
-
-**Reasoning mode (B5).** Gemma 4's thinking mode streams a chain-of-thought block before
-the final answer, introducing two new latency metrics: TFRT (time to first reasoning token)
-and TFAT (time to first answer token). Thinking overhead (TFAT − TFRT) is consistently
-**~4.3–4.9 s** across all tested load levels — it is a model property, not a system
-bottleneck. The standard 2 s TTFT threshold is inapplicable to reasoning mode; we propose
-a TFAT < 10 s SLO for this workload. The full-stack operating point in reasoning mode is
-**2 req/s** (0% errors, TFAT p50 = 8 s, p95 = 18 s). At QPS ≥ 3, TFRT grows to 23–44 s
-as queued requests wait behind long think cycles, confirming that GPU occupancy — not relay
-overhead — is the binding constraint.
-
-**Agentic workflows (B6 Sweep A — fixed concurrency).** Multi-turn tool-using workflows
-(literature assistant, code debugger, data QA) averaging 2.5 turns each were benchmarked
-at fixed concurrent session counts using simulated deterministic tools (`search_papers`,
-`read_file`, `calculate`). The full-stack operating point is **N = 4 concurrent sessions**
-(1.5% unresponsive, TTFT turn-1 p50 = 1.2 s, E2E p50 = 6.9 s). N = 8 sessions degrades
-sharply to 27% unresponsive; N ≥ 16 collapses. Little's Law correctly predicts effective
-concurrency throughout: at N=4, λ=0.35 wf/s × W=7.3 s = 2.56 effectively active sessions
-(slots are not always busy). At N=32 saturation, λ × W = 26.7 ≈ N.
-
-**Agentic workflows (B6 Sweep B — Poisson arrivals).** The same workflow suite was
-submitted at Poisson-distributed arrival rates to characterize behavior under realistic
-unpredictable load. The operating point is **λ = 0.5 wf/s** (4.5% unresponsive, TTFT
-turn-1 p50 = 1.15 s, E2E p50 = 5.9 s). At λ = 1.0 wf/s the system degrades abruptly to
-76% unresponsive; at λ ≥ 2.0 wf/s effective throughput saturates at ~0.95–1.15 wf/s
-regardless of offered load, with 98% unresponsive. Little's Law confirms saturation: N =
-λ × W plateaus at ~85–87 concurrent sessions at λ ≥ 2.0 wf/s, matching the vLLM queue
-depth ceiling. These results show that the gateway sustains up to **0.5 agentic workflows
-per second** under production-like Poisson arrivals before queueing dominates latency.
-
-The relay itself adds no measurable per-message overhead beyond the constant tunnel
-latency — it is a memory-copy forwarder with no parsing on message content. The framework
-overhead is identical for any HPC function type registered via `HPCApp`.
+The 0.60 s TTFT includes Globus Compute authentication and job dispatch on a dedicated
+single-user endpoint. The relay itself adds no measurable per-message overhead — it is a
+memory-copy forwarder with no parsing on message content. These numbers are for the LLM
+preset; the framework overhead is identical for any other HPC function type.
 
 # Acknowledgements
 
