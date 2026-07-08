@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.3 (2026-07-08)
+
+### Fix: buffer proxy 4xx detection was unreachable
+
+`urllib.request.urlopen` raises `urllib.error.HTTPError` on 4xx/5xx responses —
+it never enters the `with` block, so the `if resp.status != 200` guard added in
+0.6.2 was dead code. The fix in 0.6.2 appeared correct but did not work: the
+relay still saw an empty buffer and retried forever.
+
+Fix: catch `urllib.error.HTTPError` explicitly in the except clause, read the
+error body there, and write the SSE error event + `data: [DONE]` before calling
+`job.mark_done()`. The success path (`with urlopen(...) as resp`) is now clean
+with no status check needed.
+
 ## 0.6.2 (2026-07-08)
 
 ### Fix: buffer proxy infinite retry on 4xx vLLM errors
