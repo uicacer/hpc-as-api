@@ -201,7 +201,19 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             with urllib.request.urlopen(req, timeout=300) as resp:  # noqa: S310  # nosec B310
                 if resp.status != 200:
                     err_body = resp.read().decode(errors="replace")
-                    job.mark_done(error=f"vLLM {resp.status}: {err_body[:200]}")
+                    err_msg = f"vLLM {resp.status}: {err_body[:200]}"
+                    log.error(f"vLLM returned {resp.status} for job {job.job_id[:8]}: {err_body[:200]}")
+                    # 4xx = permanent error (wrong model, bad request, etc.) — will never succeed.
+                    # Write an SSE error event so the relay sees [DONE] and stops retrying.
+                    # Without this the relay receives an empty stream, treats it as a tunnel
+                    # drop, and retries forever via X-Resume-Job.
+                    if 400 <= resp.status < 500:
+                        sse_err = json.dumps(
+                            {"error": {"message": err_msg, "type": "invalid_request_error", "code": resp.status}}
+                        )
+                        job.append(f"data: {sse_err}\n\n".encode())
+                        job.append(b"data: [DONE]\n\n")
+                    job.mark_done(error=err_msg)
                     return
                 # Read SSE line by line; accumulate into proper chunk boundaries.
                 # vLLM emits:  "data: {...}\n\n"

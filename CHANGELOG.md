@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.2 (2026-07-08)
+
+### Fix: buffer proxy infinite retry on 4xx vLLM errors
+
+When vLLM returned a 4xx response (e.g. 404 "model does not exist"), the buffer
+proxy marked the job as errored but left the SSE buffer empty — no `[DONE]`
+token. The relay received an empty stream, interpreted it as a tunnel drop, and
+retried via `X-Resume-Job` indefinitely.
+
+Fix: on 4xx, write a proper SSE error event followed by `data: [DONE]` into the
+buffer before marking the job done. The relay sees `[DONE]`, sets `done=True`,
+and exits the retry loop cleanly. 5xx errors still retry (transient server
+errors may recover), but 4xx errors (wrong model, bad request) are permanent and
+will never recover on retry.
+
 ## 0.5.0 (2026-06-16)
 
 ### Transparent parameter & response passthrough
