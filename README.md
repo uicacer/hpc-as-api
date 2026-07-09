@@ -1,6 +1,6 @@
 # hpc-as-api
 
-[![PyPI](https://img.shields.io/pypi/v/hpc-as-api)](https://pypi.org/project/hpc-as-api/)
+[![PyPI](https://img.shields.io/pypi/v/hpc-as-api?cacheSeconds=300)](https://pypi.org/project/hpc-as-api/)
 [![Tests](https://github.com/uicacer/hpc-as-api/actions/workflows/tests.yml/badge.svg)](https://github.com/uicacer/hpc-as-api/actions)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](https://github.com/uicacer/hpc-as-api/blob/main/LICENSE)
 
@@ -244,12 +244,34 @@ The caller presents a Globus access token validated via introspection. The job r
 The caller presents a static key. Set one or more `PROXY_API_KEY_<NAME>=<value>` env vars. The `<NAME>` suffix (lowercased) identifies the caller in logs and rate-limit overrides.
 
 ```bash
-# Example: two keys, different rate limits
+# Example: multiple keys with capacity-derived rate limits
 PROXY_API_KEY_CLASS=sk-class-key
 PROXY_API_KEY_DEMO=sk-demo-key
-PROXY_RATE_LIMIT_REQUESTS=10000      # class key: 10k req/min
-PROXY_RATE_LIMIT_REQUESTS_DEMO=20    # demo key: 20 req/min
+PROXY_API_KEY_BACKEND=sk-backend-key
+PROXY_RATE_LIMIT_REQUESTS=20         # default: 20 req/min per key (interactive user cadence)
+PROXY_RATE_LIMIT_WINDOW=60           # sliding window in seconds
+PROXY_RATE_LIMIT_REQUESTS_DEMO=5     # demo/public key: 5 req/min (abuse prevention)
+PROXY_RATE_LIMIT_REQUESTS_BACKEND=360  # backend service: 360 req/min = full system capacity
 ```
+
+### Rate limit design: allocating capacity per API key
+
+Rate limits should be derived from your hardware's measured capacity. For a 2×A100 deployment
+running `gemma-4-31B-it` (benchmarked June 2026, `B3_20260622_110000.json`):
+
+- **System operating point**: 6 req/s = **360 req/min** (p95 TTFT < 1 s, 0% errors)
+- **Typical interactive cadence**: 1 message/min per user (send → read → think → send)
+- **At saturation**: 360 simultaneous users at 1 msg/min exactly saturates the system
+
+| Key type | Recommended limit | Req/s equiv | Rationale |
+|---|---|---|---|
+| Default / interactive | **20 req/min** | 0.33 req/s | Burst headroom; any single key ≤ 5.5% of system |
+| Per-student (classroom) | **10 req/min** | 0.17 req/s | Conservative for shared resource; 36 such keys saturate at burst |
+| Backend service (sole caller) | **360 req/min** | 6.0 req/s | Full system capacity — only if this service IS the only caller |
+| Demo / public / widely shared | **5 req/min** | 0.08 req/s | Prevents a leaked key from monopolizing the system |
+
+> **Rule of thumb**: `per_key_limit = (system_req_per_min) / (number_of_concurrent_keys_you_expect_to_burst_simultaneously)`.
+> If you issue 300 per-student keys and expect at most 18 to burst at once (5% of 360), set each to `360/18 = 20 req/min`.
 
 > **Scaling to per-student keys (future work):** For classroom deployments with hundreds of students, the planned approach is a `PROXY_KEYS_FILE` pointing at a JSON file of `{"student_name": "sk-..."}` pairs loaded and merged with env-var keys at startup. A bulk generation script produces all keys at once; students receive theirs via Canvas. No OAuth, no login, no extra infrastructure. Not yet implemented.
 
